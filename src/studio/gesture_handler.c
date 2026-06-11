@@ -69,6 +69,7 @@ static int handle_get(const pyuron_gesture_GetGestureRequest *req,
     resp->which_response_type = pyuron_gesture_Response_get_tag;
     resp->response_type.get = (pyuron_gesture_GetGestureResponse)
         pyuron_gesture_GetGestureResponse_init_zero;
+    resp->response_type.get.has_gesture = true; // nanopb: submessage presence flag
     return fill_gesture_info(req->id, &resp->response_type.get.gesture);
 }
 
@@ -89,6 +90,7 @@ static int handle_set_param(const pyuron_gesture_SetParamRequest *req,
     resp->which_response_type = pyuron_gesture_Response_set_param_tag;
     resp->response_type.set_param = (pyuron_gesture_SetParamResponse)
         pyuron_gesture_SetParamResponse_init_zero;
+    resp->response_type.set_param.has_gesture = true;
     return fill_gesture_info(req->id, &resp->response_type.set_param.gesture);
 }
 
@@ -102,6 +104,7 @@ static int handle_reset(const pyuron_gesture_ResetGestureRequest *req,
     resp->which_response_type = pyuron_gesture_Response_reset_tag;
     resp->response_type.reset = (pyuron_gesture_ResetGestureResponse)
         pyuron_gesture_ResetGestureResponse_init_zero;
+    resp->response_type.reset.has_gesture = true;
     return fill_gesture_info(req->id, &resp->response_type.reset.gesture);
 }
 
