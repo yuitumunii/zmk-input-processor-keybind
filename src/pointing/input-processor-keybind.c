@@ -20,7 +20,11 @@
 #include <drivers/input_processor.h>
 #include <zephyr/logging/log.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <zmk/pointing/zip_keybind.h>
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND_STUDIO_RPC)
+#include <zephyr/settings/settings.h>
+#endif
 
 #define DT_DRV_COMPAT zmk_input_processor_keybind
 
@@ -451,6 +455,24 @@ int zip_keybind_set_param(uint32_t id, enum zip_keybind_param param, int32_t val
     return 0;
 }
 
+// --- NVS persistence (Zephyr settings) ----------------------------------
+// Saved values survive reboot. Keys are "zkb/<id>/<param>" holding an int32.
+// On boot ZMK's settings_load() replays them via zkb_settings_set, which
+// re-applies into RAM after the devicetree defaults were seeded at init.
+
+#define ZIP_KEYBIND_SETTINGS_SUBTREE "zkb"
+#define ZIP_KEYBIND_PARAM_COUNT 5
+
+static void zip_keybind_settings_key(char *buf, size_t len, uint32_t id, uint32_t param) {
+    snprintf(buf, len, ZIP_KEYBIND_SETTINGS_SUBTREE "/%u/%u", id, param);
+}
+
+int zip_keybind_save_param(uint32_t id, enum zip_keybind_param param, int32_t value) {
+    char key[24];
+    zip_keybind_settings_key(key, sizeof(key), id, (uint32_t)param);
+    return settings_save_one(key, &value, sizeof(value));
+}
+
 int zip_keybind_reset(uint32_t id) {
     if (id >= ARRAY_SIZE(zip_keybind_devs)) {
         return -EINVAL;
@@ -465,7 +487,40 @@ int zip_keybind_reset(uint32_t id) {
     data->threshold = cfg->threshold;
     data->max_threshold = cfg->max_threshold;
     data->max_delta = cfg->max_pending_activations * data->tick;
+
+    // Drop any persisted overrides so the flashed defaults stick across reboot.
+    for (uint32_t p = 0; p < ZIP_KEYBIND_PARAM_COUNT; p++) {
+        char key[24];
+        zip_keybind_settings_key(key, sizeof(key), id, p);
+        settings_delete(key);
+    }
     return 0;
 }
+
+// settings_load() callback. name is the part after the subtree, "<id>/<param>".
+static int zip_keybind_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+                                    void *cb_arg) {
+    const char *slash = strchr(name, '/');
+    if (!slash) {
+        return -ENOENT;
+    }
+    uint32_t id = (uint32_t)strtoul(name, NULL, 10);
+    uint32_t param = (uint32_t)strtoul(slash + 1, NULL, 10);
+
+    int32_t value;
+    if (len != sizeof(value)) {
+        return -EINVAL;
+    }
+    ssize_t rc = read_cb(cb_arg, &value, sizeof(value));
+    if (rc < 0) {
+        return (int)rc;
+    }
+    // Re-apply into RAM (no re-save: this is the load path).
+    zip_keybind_set_param(id, (enum zip_keybind_param)param, value);
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(zip_keybind, ZIP_KEYBIND_SETTINGS_SUBTREE, NULL,
+                               zip_keybind_settings_set, NULL, NULL);
 
 #endif /* CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND_STUDIO_RPC */

@@ -42,6 +42,9 @@ int zip_keybind_get_info(uint32_t id, struct zip_keybind_info *out);
 // Returns 0 on success, -EINVAL on bad id/param.
 int zip_keybind_set_param(uint32_t id, enum zip_keybind_param param, int32_t value);
 
+// Persist one parameter to NVS so it survives reboot. Returns 0 on success.
+int zip_keybind_save_param(uint32_t id, enum zip_keybind_param param, int32_t value);
+
 // Restore instance `id` to its devicetree (flashed) defaults.
 // Returns 0 on success, -EINVAL if id is out of range.
 int zip_keybind_reset(uint32_t id);

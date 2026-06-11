@@ -86,6 +86,8 @@ static int handle_set_param(const pyuron_gesture_SetParamRequest *req,
     if (ret < 0) {
         return ret;
     }
+    // Persist so the tuned value survives reboot.
+    zip_keybind_save_param(req->id, (enum zip_keybind_param)req->param, req->value);
 
     resp->which_response_type = pyuron_gesture_Response_set_param_tag;
     resp->response_type.set_param = (pyuron_gesture_SetParamResponse)
