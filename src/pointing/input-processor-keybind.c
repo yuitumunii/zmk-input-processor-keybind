@@ -62,13 +62,24 @@ struct zip_keybind_data {
     uint8_t device_index;
     enum zip_keybind_key_state state;
 
+    // Runtime-tunable params. Copied from config at init, then mutable at
+    // runtime via the custom Studio RPC (see studio/keybind_custom_handler.c).
+    // All processing reads these (data->) instead of the const config (cfg->),
+    // so changes take effect live without reflashing.
+    uint32_t tick;
+    uint32_t wait_ms;
+    uint32_t tap_ms;
+    int32_t threshold;
+    int32_t max_threshold;
+
     const struct device *dev;
     struct k_work_delayable press_work;
 };
 
 static inline bool has_pending_movement(const struct zip_keybind_data *data,
                                         const struct zip_keybind_config *cfg) {
-    return abs(data->delta_x) >= cfg->tick || abs(data->delta_y) >= cfg->tick;
+    ARG_UNUSED(cfg);
+    return abs(data->delta_x) >= data->tick || abs(data->delta_y) >= data->tick;
 }
 
 static uint32_t approx_hypot(uint32_t a, uint32_t b) {
@@ -157,7 +168,7 @@ static int zip_keybind_handle_event(const struct device *dev, struct input_event
     }
 
     // cutoff small or very large movements
-    if (cfg->threshold > abs(value) || abs(value) > cfg->max_threshold)
+    if (data->threshold > abs(value) || abs(value) > data->max_threshold)
         return ZMK_INPUT_PROC_STOP;
 
     // Accumulate movement
@@ -184,7 +195,7 @@ static int zip_keybind_handle_event(const struct device *dev, struct input_event
     }
 
     LOG_DBG("dev: %d dx: %d dy: %d tick: %d", state->input_device_index, data->delta_x,
-            data->delta_y, cfg->tick);
+            data->delta_y, data->tick);
 
     if (has_pending_movement(data, cfg)) {
         data->device_index = state->input_device_index;
@@ -257,22 +268,22 @@ static void press_work_cb(struct k_work *work) {
         check_and_release_key(data, cfg, ZIP_KEY_DOWN);
 
         // wait after release
-        k_sleep(K_MSEC(cfg->wait_ms));
+        k_sleep(K_MSEC(data->wait_ms));
     }
 
     if (has_queued_movement) {
         int idx = ZIP_KEY_NONE;
         int idy = ZIP_KEY_NONE;
 
-        if (abs(data->delta_x) >= cfg->tick) {
+        if (abs(data->delta_x) >= data->tick) {
             if (data->delta_x > 0) { // RIGHT
                 idx = ZIP_KEY_RIGHT;
-                data->delta_x -= cfg->tick;
+                data->delta_x -= data->tick;
 
                 check_and_release_key(data, cfg, ZIP_KEY_LEFT);
             } else { // LEFT
                 idx = ZIP_KEY_LEFT;
-                data->delta_x += cfg->tick;
+                data->delta_x += data->tick;
 
                 data->state |= ZIP_KEY_LEFT;
 
@@ -284,15 +295,15 @@ static void press_work_cb(struct k_work *work) {
             check_and_release_key(data, cfg, ZIP_KEY_RIGHT);
         }
 
-        if (abs(data->delta_y) >= cfg->tick) {
+        if (abs(data->delta_y) >= data->tick) {
             if (data->delta_y > 0) { // UP
                 idy = ZIP_KEY_UP;
-                data->delta_y -= cfg->tick;
+                data->delta_y -= data->tick;
 
                 check_and_release_key(data, cfg, ZIP_KEY_DOWN);
             } else { // DOWN
                 idy = ZIP_KEY_DOWN;
-                data->delta_y += cfg->tick;
+                data->delta_y += data->tick;
 
                 check_and_release_key(data, cfg, ZIP_KEY_UP);
             }
@@ -308,7 +319,7 @@ static void press_work_cb(struct k_work *work) {
         if (idy != ZIP_KEY_NONE)
             invoke_binding(data, cfg, idy, true);
 
-        k_work_schedule(&data->press_work, K_MSEC(cfg->tap_ms));
+        k_work_schedule(&data->press_work, K_MSEC(data->tap_ms));
     }
 
     // clear remainders after all movement processed
@@ -327,7 +338,16 @@ static int zip_keybind_init(const struct device *dev) {
     const struct zip_keybind_config *cfg = dev->config;
 
     data->dev = dev;
-    data->max_delta = cfg->max_pending_activations * cfg->tick;
+
+    // Seed the runtime-tunable params from the devicetree config. After this,
+    // all processing reads data-> values, which the custom RPC can change live.
+    data->tick = cfg->tick;
+    data->wait_ms = cfg->wait_ms;
+    data->tap_ms = cfg->tap_ms;
+    data->threshold = cfg->threshold;
+    data->max_threshold = cfg->max_threshold;
+
+    data->max_delta = cfg->max_pending_activations * data->tick;
 
     k_work_init_delayable(&data->press_work, press_work_cb);
     return 0;
