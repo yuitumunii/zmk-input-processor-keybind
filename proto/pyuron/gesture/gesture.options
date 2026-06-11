@@ -1,0 +1,4 @@
+# Nanopb options for gesture.proto — fixed sizes so messages are statically
+# sized (no malloc, no callbacks). name holds the devicetree node name.
+pyuron.gesture.GestureInfo.name    max_size:24
+pyuron.gesture.ErrorResponse.message   max_size:48

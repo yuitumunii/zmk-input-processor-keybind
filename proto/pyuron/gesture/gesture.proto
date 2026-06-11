@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package pyuron.gesture;
+
+// Which runtime-tunable parameter of a zip_keybind processor to change.
+// Values MUST stay in sync with enum zip_keybind_param in
+// include/zmk/pointing/zip_keybind.h.
+enum Param {
+    PARAM_TICK = 0;          // flick size needed to fire (sensitivity)
+    PARAM_WAIT_MS = 1;       // cooldown after a fire
+    PARAM_TAP_MS = 2;        // press/repeat cadence
+    PARAM_THRESHOLD = 3;     // ignore movements smaller than this
+    PARAM_MAX_THRESHOLD = 4; // ignore movements larger than this
+}
+
+// Snapshot of one zip_keybind processor instance.
+message GestureInfo {
+    uint32 id = 1;            // index into the firmware's processor array
+    string name = 2;         // devicetree node name, e.g. "zip_keybind_2finger"
+    uint32 tick = 3;
+    uint32 wait_ms = 4;
+    uint32 tap_ms = 5;
+    int32 threshold = 6;
+    int32 max_threshold = 7;
+}
+
+// Each response carries at most ONE GestureInfo so it stays well under the
+// Studio RPC TX buffer. The app probes get_count then get(0..count-1) rather
+// than receiving a list, avoiding async notifications entirely.
+
+message GetCountRequest {}
+message GetCountResponse { uint32 count = 1; }
+
+message GetGestureRequest { uint32 id = 1; }
+message GetGestureResponse { GestureInfo gesture = 1; }
+
+message SetParamRequest {
+    uint32 id = 1;
+    Param param = 2;
+    int32 value = 3;
+}
+message SetParamResponse { GestureInfo gesture = 1; } // echoes applied state
+
+message ResetGestureRequest { uint32 id = 1; } // restore devicetree defaults
+message ResetGestureResponse { GestureInfo gesture = 1; }
+
+message Request {
+    oneof request_type {
+        GetCountRequest get_count = 1;
+        GetGestureRequest get = 2;
+        SetParamRequest set_param = 3;
+        ResetGestureRequest reset = 4;
+    }
+}
+
+message ErrorResponse { string message = 1; }
+
+message Response {
+    oneof response_type {
+        ErrorResponse error = 1;
+        GetCountResponse get_count = 2;
+        GetGestureResponse get = 3;
+        SetParamResponse set_param = 4;
+        ResetGestureResponse reset = 5;
+    }
+}

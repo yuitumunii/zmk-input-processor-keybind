@@ -19,6 +19,8 @@
 #include <zmk/events/layer_state_changed.h>
 #include <drivers/input_processor.h>
 #include <zephyr/logging/log.h>
+#include <errno.h>
+#include <zmk/pointing/zip_keybind.h>
 
 #define DT_DRV_COMPAT zmk_input_processor_keybind
 
@@ -37,6 +39,8 @@ enum zip_keybind_key_state {
 struct zip_keybind_config {
     uint8_t index;
     uint8_t mode;
+
+    const char *name; // devicetree node name, exposed over the gesture RPC
 
     bool track_remainders;
     bool continuous_key_press;
@@ -367,6 +371,7 @@ static int zip_keybind_init(const struct device *dev) {
         TRANSFORMED_BINDINGS(n);                                                                   \
     static struct zip_keybind_config zip_keybind_config_##n = {                                    \
         .index = n,                                                                                \
+        .name = DT_NODE_FULL_NAME(DT_DRV_INST(n)),                                                 \
         .mode = DT_INST_PROP_OR(n, mode, 0),                                                       \
         .bindings = zip_keybind_config_bindings_##n,                                               \
         .track_remainders = DT_INST_PROP_OR(n, track_remainders, false),                           \
@@ -382,3 +387,85 @@ static int zip_keybind_init(const struct device *dev) {
                           CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &zip_keybind_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(ZIP_KEYBIND_INST)
+
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND_STUDIO_RPC)
+
+/* Runtime registry + tuning API used by the custom Studio RPC handler
+ * (src/studio/gesture_handler.c). Declared in include/zmk/pointing/zip_keybind.h.
+ * All getters/setters operate on the RAM-resident params in zip_keybind_data,
+ * so changes take effect immediately without reflashing. */
+
+#define ZIP_KEYBIND_DEV(n) DEVICE_DT_INST_GET(n),
+
+static const struct device *const zip_keybind_devs[] = {
+    DT_INST_FOREACH_STATUS_OKAY(ZIP_KEYBIND_DEV)};
+
+int zip_keybind_get_count(void) { return ARRAY_SIZE(zip_keybind_devs); }
+
+int zip_keybind_get_info(uint32_t id, struct zip_keybind_info *out) {
+    if (id >= ARRAY_SIZE(zip_keybind_devs) || out == NULL) {
+        return -EINVAL;
+    }
+    const struct device *dev = zip_keybind_devs[id];
+    const struct zip_keybind_config *cfg = dev->config;
+    const struct zip_keybind_data *data = dev->data;
+
+    out->name = cfg->name;
+    out->tick = data->tick;
+    out->wait_ms = data->wait_ms;
+    out->tap_ms = data->tap_ms;
+    out->threshold = data->threshold;
+    out->max_threshold = data->max_threshold;
+    return 0;
+}
+
+int zip_keybind_set_param(uint32_t id, enum zip_keybind_param param, int32_t value) {
+    if (id >= ARRAY_SIZE(zip_keybind_devs)) {
+        return -EINVAL;
+    }
+    const struct device *dev = zip_keybind_devs[id];
+    const struct zip_keybind_config *cfg = dev->config;
+    struct zip_keybind_data *data = dev->data;
+
+    switch (param) {
+    case ZIP_KEYBIND_PARAM_TICK:
+        // tick is the divisor for accumulated movement; 0 would never fire.
+        data->tick = (uint32_t)MAX(value, 1);
+        data->max_delta = cfg->max_pending_activations * data->tick;
+        break;
+    case ZIP_KEYBIND_PARAM_WAIT_MS:
+        data->wait_ms = (uint32_t)MAX(value, 0);
+        break;
+    case ZIP_KEYBIND_PARAM_TAP_MS:
+        data->tap_ms = (uint32_t)MAX(value, 0);
+        break;
+    case ZIP_KEYBIND_PARAM_THRESHOLD:
+        data->threshold = value;
+        break;
+    case ZIP_KEYBIND_PARAM_MAX_THRESHOLD:
+        data->max_threshold = value;
+        break;
+    default:
+        return -EINVAL;
+    }
+    return 0;
+}
+
+int zip_keybind_reset(uint32_t id) {
+    if (id >= ARRAY_SIZE(zip_keybind_devs)) {
+        return -EINVAL;
+    }
+    const struct device *dev = zip_keybind_devs[id];
+    const struct zip_keybind_config *cfg = dev->config;
+    struct zip_keybind_data *data = dev->data;
+
+    data->tick = cfg->tick;
+    data->wait_ms = cfg->wait_ms;
+    data->tap_ms = cfg->tap_ms;
+    data->threshold = cfg->threshold;
+    data->max_threshold = cfg->max_threshold;
+    data->max_delta = cfg->max_pending_activations * data->tick;
+    return 0;
+}
+
+#endif /* CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND_STUDIO_RPC */
