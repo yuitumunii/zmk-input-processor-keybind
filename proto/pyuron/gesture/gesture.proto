@@ -44,12 +44,35 @@ message SetParamResponse { GestureInfo gesture = 1; } // echoes applied state
 message ResetGestureRequest { uint32 id = 1; } // restore devicetree defaults
 message ResetGestureResponse { GestureInfo gesture = 1; }
 
+// 1方向のbinding。behavior_id は ZMK Studio の behavior local id
+// (= crc16 of behavior device name)。標準キーマップRPCと同じidなので
+// アプリ側は既存の挙動ピッカーをそのまま流用できる。
+message BindingInfo {
+    uint32 id = 1;          // gesture instance id
+    uint32 dir = 2;         // 0=right 1=left 2=down 3=up
+    uint32 behavior_id = 3; // zmk_behavior_local_id_t
+    int32 param1 = 4;
+    int32 param2 = 5;
+}
+message GetBindingRequest { uint32 id = 1; uint32 dir = 2; }
+message GetBindingResponse { BindingInfo binding = 1; }
+message SetBindingRequest {
+    uint32 id = 1;
+    uint32 dir = 2;
+    uint32 behavior_id = 3;
+    int32 param1 = 4;
+    int32 param2 = 5;
+}
+message SetBindingResponse { BindingInfo binding = 1; }
+
 message Request {
     oneof request_type {
         GetCountRequest get_count = 1;
         GetGestureRequest get = 2;
         SetParamRequest set_param = 3;
         ResetGestureRequest reset = 4;
+        GetBindingRequest get_binding = 5;
+        SetBindingRequest set_binding = 6;
     }
 }
 
@@ -62,5 +85,7 @@ message Response {
         GetGestureResponse get = 3;
         SetParamResponse set_param = 4;
         ResetGestureResponse reset = 5;
+        GetBindingResponse get_binding = 6;
+        SetBindingResponse set_binding = 7;
     }
 }

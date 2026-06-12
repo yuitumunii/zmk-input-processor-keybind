@@ -48,3 +48,18 @@ int zip_keybind_save_param(uint32_t id, enum zip_keybind_param param, int32_t va
 // Restore instance `id` to its devicetree (flashed) defaults.
 // Returns 0 on success, -EINVAL if id is out of range.
 int zip_keybind_reset(uint32_t id);
+
+#define ZIP_KEYBIND_DIR_COUNT 4 // right, left, down, up
+
+// dir(0..3) の現在のbindingを読む。behavior_id は現在bindされている挙動の local id。
+// 0成功 / -EINVAL(id,dir不正)。
+int zip_keybind_get_binding(uint32_t id, uint32_t dir,
+                            uint16_t *behavior_id, int32_t *param1, int32_t *param2);
+
+// dir(0..3) を local id=behavior_id の挙動へライブ差し替え。
+// 0成功 / -EINVAL(id,dir) / -ENODEV(behavior_id が解決不能)。
+int zip_keybind_set_binding(uint32_t id, uint32_t dir,
+                            uint16_t behavior_id, int32_t param1, int32_t param2);
+
+// 現在の bindings[dir]（名前+param）を NVS "gkb/<id>/<dir>" に保存。0成功。
+int zip_keybind_save_binding(uint32_t id, uint32_t dir);

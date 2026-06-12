@@ -96,6 +96,46 @@ static int handle_set_param(const pyuron_gesture_SetParamRequest *req,
     return fill_gesture_info(req->id, &resp->response_type.set_param.gesture);
 }
 
+static int fill_binding_info(uint32_t id, uint32_t dir, pyuron_gesture_BindingInfo *info) {
+    uint16_t bid = 0;
+    int32_t p1 = 0, p2 = 0;
+    int ret = zip_keybind_get_binding(id, dir, &bid, &p1, &p2);
+    if (ret < 0) {
+        return ret;
+    }
+    *info = (pyuron_gesture_BindingInfo)pyuron_gesture_BindingInfo_init_zero;
+    info->id = id;
+    info->dir = dir;
+    info->behavior_id = bid;
+    info->param1 = p1;
+    info->param2 = p2;
+    return 0;
+}
+
+static int handle_get_binding(const pyuron_gesture_GetBindingRequest *req,
+                              pyuron_gesture_Response *resp) {
+    resp->which_response_type = pyuron_gesture_Response_get_binding_tag;
+    resp->response_type.get_binding = (pyuron_gesture_GetBindingResponse)
+        pyuron_gesture_GetBindingResponse_init_zero;
+    resp->response_type.get_binding.has_binding = true;
+    return fill_binding_info(req->id, req->dir, &resp->response_type.get_binding.binding);
+}
+
+static int handle_set_binding(const pyuron_gesture_SetBindingRequest *req,
+                              pyuron_gesture_Response *resp) {
+    int ret = zip_keybind_set_binding(req->id, req->dir, (uint16_t)req->behavior_id,
+                                      req->param1, req->param2);
+    if (ret < 0) {
+        return ret;
+    }
+    zip_keybind_save_binding(req->id, req->dir); // 再起動後も保持
+    resp->which_response_type = pyuron_gesture_Response_set_binding_tag;
+    resp->response_type.set_binding = (pyuron_gesture_SetBindingResponse)
+        pyuron_gesture_SetBindingResponse_init_zero;
+    resp->response_type.set_binding.has_binding = true;
+    return fill_binding_info(req->id, req->dir, &resp->response_type.set_binding.binding);
+}
+
 static int handle_reset(const pyuron_gesture_ResetGestureRequest *req,
                         pyuron_gesture_Response *resp) {
     int ret = zip_keybind_reset(req->id);
@@ -141,6 +181,12 @@ static bool gesture_rpc_handle_request(const zmk_custom_CallRequest *raw_request
         break;
     case pyuron_gesture_Request_reset_tag:
         rc = handle_reset(&req.request_type.reset, resp);
+        break;
+    case pyuron_gesture_Request_get_binding_tag:
+        rc = handle_get_binding(&req.request_type.get_binding, resp);
+        break;
+    case pyuron_gesture_Request_set_binding_tag:
+        rc = handle_set_binding(&req.request_type.set_binding, resp);
         break;
     default:
         LOG_WRN("Unsupported gesture request type: %d", req.which_request_type);

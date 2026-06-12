@@ -48,7 +48,9 @@ struct zip_keybind_config {
 
     bool track_remainders;
     bool continuous_key_press;
-    const struct zmk_behavior_binding *bindings;
+    struct zmk_behavior_binding *bindings;       // mutable at runtime (live binding swap)
+    const struct zmk_behavior_binding *default_bindings; // ROM copy for reset
+    uint8_t num_bindings;
     uint32_t tap_ms;
     uint32_t wait_ms;
     uint32_t tick;
@@ -373,11 +375,15 @@ static int zip_keybind_init(const struct device *dev) {
     };                                                                                             \
     static struct zmk_behavior_binding zip_keybind_config_bindings_##n[] =                         \
         TRANSFORMED_BINDINGS(n);                                                                   \
+    static const struct zmk_behavior_binding zip_keybind_default_bindings_##n[] =                  \
+        TRANSFORMED_BINDINGS(n);                                                                   \
     static struct zip_keybind_config zip_keybind_config_##n = {                                    \
         .index = n,                                                                                \
         .name = DT_NODE_FULL_NAME(DT_DRV_INST(n)),                                                 \
         .mode = DT_INST_PROP_OR(n, mode, 0),                                                       \
         .bindings = zip_keybind_config_bindings_##n,                                               \
+        .default_bindings = zip_keybind_default_bindings_##n,                                      \
+        .num_bindings = DT_INST_PROP_LEN(n, bindings),                                             \
         .track_remainders = DT_INST_PROP_OR(n, track_remainders, false),                           \
         .continuous_key_press = DT_INST_PROP_OR(n, continuous_key_press, false),                   \
         .tap_ms = DT_INST_PROP_OR(n, tap_ms, 20),                                                  \
@@ -473,6 +479,111 @@ int zip_keybind_save_param(uint32_t id, enum zip_keybind_param param, int32_t va
     return settings_save_one(key, &value, sizeof(value));
 }
 
+// --- NVS persistence for direction bindings (Zephyr settings) ---------------
+// Keys are "gkb/<id>/<dir>" holding a zip_keybind_binding_nvs struct.
+// Name string is saved (not behavior_id) so load is robust after reboot
+// without depending on local_id re-mapping.
+
+#define ZIP_KEYBIND_GKB_SUBTREE "gkb"
+#define ZIP_KEYBIND_GKB_NAME_MAX 24
+
+struct zip_keybind_binding_nvs {
+    char name[ZIP_KEYBIND_GKB_NAME_MAX];
+    int32_t param1;
+    int32_t param2;
+};
+
+static void zip_keybind_gkb_key(char *buf, size_t len, uint32_t id, uint32_t dir) {
+    snprintf(buf, len, ZIP_KEYBIND_GKB_SUBTREE "/%u/%u", id, dir);
+}
+
+int zip_keybind_get_binding(uint32_t id, uint32_t dir, uint16_t *behavior_id,
+                            int32_t *param1, int32_t *param2) {
+    if (id >= ARRAY_SIZE(zip_keybind_devs) || dir >= ZIP_KEYBIND_DIR_COUNT) {
+        return -EINVAL;
+    }
+    const struct device *dev = zip_keybind_devs[id];
+    const struct zip_keybind_config *cfg = dev->config;
+    const struct zmk_behavior_binding *b = &cfg->bindings[dir];
+    if (behavior_id) {
+        *behavior_id = b->behavior_dev ? zmk_behavior_get_local_id(b->behavior_dev) : 0;
+    }
+    if (param1) { *param1 = (int32_t)b->param1; }
+    if (param2) { *param2 = (int32_t)b->param2; }
+    return 0;
+}
+
+int zip_keybind_set_binding(uint32_t id, uint32_t dir, uint16_t behavior_id,
+                            int32_t param1, int32_t param2) {
+    if (id >= ARRAY_SIZE(zip_keybind_devs) || dir >= ZIP_KEYBIND_DIR_COUNT) {
+        return -EINVAL;
+    }
+    const char *name = zmk_behavior_find_behavior_name_from_local_id(behavior_id);
+    if (!name) {
+        return -ENODEV;
+    }
+    const struct device *bdev = zmk_behavior_get_binding(name);
+    if (!bdev) {
+        return -ENODEV;
+    }
+    const struct device *dev = zip_keybind_devs[id];
+    const struct zip_keybind_config *cfg = dev->config;
+    // cfg->bindings[] is a non-const array; only cfg itself is const-qualified.
+    // Writing through the mutable pointer stored in cfg->bindings is valid.
+    cfg->bindings[dir].behavior_dev = bdev->name; // device->name is static storage, always valid
+    cfg->bindings[dir].param1 = (uint32_t)param1;
+    cfg->bindings[dir].param2 = (uint32_t)param2;
+    return 0;
+}
+
+int zip_keybind_save_binding(uint32_t id, uint32_t dir) {
+    if (id >= ARRAY_SIZE(zip_keybind_devs) || dir >= ZIP_KEYBIND_DIR_COUNT) {
+        return -EINVAL;
+    }
+    const struct device *dev = zip_keybind_devs[id];
+    const struct zip_keybind_config *cfg = dev->config;
+    const struct zmk_behavior_binding *b = &cfg->bindings[dir];
+    struct zip_keybind_binding_nvs rec = {0};
+    if (b->behavior_dev) {
+        strncpy(rec.name, b->behavior_dev, sizeof(rec.name) - 1);
+    }
+    rec.param1 = (int32_t)b->param1;
+    rec.param2 = (int32_t)b->param2;
+    char key[24];
+    zip_keybind_gkb_key(key, sizeof(key), id, dir);
+    return settings_save_one(key, &rec, sizeof(rec));
+}
+
+// settings_load() callback. name is the subtree-relative part "<id>/<dir>".
+static int zip_keybind_gkb_set(const char *name, size_t len, settings_read_cb read_cb,
+                               void *cb_arg) {
+    const char *slash = strchr(name, '/');
+    if (!slash) { return -ENOENT; }
+    uint32_t id = (uint32_t)strtoul(name, NULL, 10);
+    uint32_t dir = (uint32_t)strtoul(slash + 1, NULL, 10);
+    struct zip_keybind_binding_nvs rec;
+    if (len != sizeof(rec)) { return -EINVAL; }
+    ssize_t rc = read_cb(cb_arg, &rec, sizeof(rec));
+    if (rc < 0) { return (int)rc; }
+    rec.name[sizeof(rec.name) - 1] = '\0';
+    if (id >= ARRAY_SIZE(zip_keybind_devs) || dir >= ZIP_KEYBIND_DIR_COUNT) {
+        return 0; // 範囲外は無視(壊れたNVSで落ちない)
+    }
+    const struct device *bdev = zmk_behavior_get_binding(rec.name);
+    if (!bdev) {
+        return 0; // 解決不能なら適用せずdevicetreeデフォルトのまま(堅牢degrade)
+    }
+    const struct device *dev = zip_keybind_devs[id];
+    const struct zip_keybind_config *cfg = dev->config;
+    cfg->bindings[dir].behavior_dev = bdev->name;
+    cfg->bindings[dir].param1 = (uint32_t)rec.param1;
+    cfg->bindings[dir].param2 = (uint32_t)rec.param2;
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(zip_keybind_gkb, ZIP_KEYBIND_GKB_SUBTREE, NULL,
+                               zip_keybind_gkb_set, NULL, NULL);
+
 int zip_keybind_reset(uint32_t id) {
     if (id >= ARRAY_SIZE(zip_keybind_devs)) {
         return -EINVAL;
@@ -493,6 +604,16 @@ int zip_keybind_reset(uint32_t id) {
         char key[24];
         zip_keybind_settings_key(key, sizeof(key), id, p);
         settings_delete(key);
+    }
+
+    // Restore default direction bindings and clear their NVS entries.
+    for (uint32_t d = 0; d < cfg->num_bindings && d < ZIP_KEYBIND_DIR_COUNT; d++) {
+        cfg->bindings[d] = cfg->default_bindings[d];
+    }
+    for (uint32_t d = 0; d < ZIP_KEYBIND_DIR_COUNT; d++) {
+        char gkey[24];
+        zip_keybind_gkb_key(gkey, sizeof(gkey), id, d);
+        settings_delete(gkey);
     }
     return 0;
 }
