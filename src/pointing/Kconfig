@@ -22,4 +22,14 @@ config ZMK_INPUT_PROCESSOR_KEYBIND_STUDIO_RPC
       desktop app without reflashing. Requires a ZMK base with custom-subsystem
       support (cormoran custom-studio-protocol).
 
+config ZMK_INPUT_PROCESSOR_KEYBIND_DYNAMIC
+    bool "Dynamic (layer-aware) trackball gesture input processor"
+    default y
+    depends on DT_HAS_ZMK_INPUT_PROCESSOR_KEYBIND_DYNAMIC_ENABLED
+    help
+      Adds the zip_keybind_dynamic processor which inspects the highest
+      active layer on every trackball event and fires per-layer configured
+      bindings.  Layers with no binding configured pass events through so
+      normal cursor processing is unaffected.
+
 endif

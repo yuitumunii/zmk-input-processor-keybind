@@ -1,0 +1,73 @@
+# Copyright (c) 2026, The ZMK Contributors
+# SPDX-License-Identifier: MIT
+
+description: >
+  Dynamic (layer-aware) trackball gesture input processor.
+  Inspects the highest active layer on every event and fires the
+  per-layer configured binding.  Layers with no entry pass cursor
+  events through unchanged.
+
+compatible: "zmk,input-processor-keybind-dynamic"
+
+include: ip_zero_param.yaml
+
+properties:
+  "#input-processor-cells":
+    type: int
+    const: 0
+  mode:
+    type: int
+    description: >
+      Motion-to-direction quantisation mode:
+        0 = raw (X/Y accumulate separately)
+        1 = 4-way DPad (dominant axis, default)
+        2 = 8-way DPad
+    default: 1
+  track_remainders:
+    type: boolean
+    description: >
+      Carry sub-tick remainder movement into the next event.
+      Recommended so small flicks are never silently dropped.
+  tick:
+    type: int
+    description: >
+      Accumulated-movement units required to fire one key event.
+      Higher = larger flick needed.  Default 180.
+    default: 180
+  wait-ms:
+    type: int
+    description: >
+      Gap (ms) inserted after releasing a direction key before the
+      next press can fire.  Default 600.
+    default: 600
+  tap-ms:
+    type: int
+    description: >
+      Delay (ms) between the key-press and key-release within one
+      tap.  Default 10.
+    default: 10
+  threshold:
+    type: int
+    description: >
+      Minimum per-event absolute value to pass the threshold filter.
+      Events smaller than this are discarded.  Default 1.
+    default: 1
+  max_threshold:
+    type: int
+    description: >
+      Maximum per-event absolute value.  Events larger are discarded
+      (avoids spurious large jumps).  Default 200.
+    default: 200
+  max_pending_activations:
+    type: int
+    description: >
+      Cap on accumulated-movement units per axis (expressed as a
+      multiple of tick).  Prevents runaway accumulation.  Default 5.
+    default: 5
+  guard-layers:
+    type: array
+    description: >
+      Layer indices that are always passed through to normal cursor
+      processing even if they have an entry in the binding table.
+      Typically the MOUSE auto-layer and the scroller layer.
+      Example: <6 7>

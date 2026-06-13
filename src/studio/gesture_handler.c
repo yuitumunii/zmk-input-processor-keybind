@@ -20,6 +20,7 @@
 #include <zephyr/sys/util.h>
 #include <zmk/studio/custom.h>
 #include <zmk/pointing/zip_keybind.h>
+#include <zmk/pointing/gesture_layer.h>
 #include <pyuron/gesture/gesture.pb.h>
 
 #include <zephyr/logging/log.h>
@@ -150,6 +151,103 @@ static int handle_reset(const pyuron_gesture_ResetGestureRequest *req,
     return fill_gesture_info(req->id, &resp->response_type.reset.gesture);
 }
 
+/* -----------------------------------------------------------------------
+ * Dynamic layer-gesture handlers
+ * ----------------------------------------------------------------------- */
+
+static int fill_layer_binding_info(uint8_t layer, uint8_t dir,
+                                   pyuron_gesture_LayerBindingInfo *info) {
+    uint16_t bid = 0;
+    int32_t p1 = 0, p2 = 0;
+    int ret = gkb_layer_get_binding(layer, dir, &bid, &p1, &p2);
+    if (ret < 0) return ret;
+
+    /* read enabled flag via gkb_layer_at — scan configured list */
+    bool enabled = false;
+    int count = gkb_layer_count();
+    for (int i = 0; i < count; i++) {
+        uint8_t l; bool e;
+        if (gkb_layer_at(i, &l, &e) == 0 && l == layer) { enabled = e; break; }
+    }
+
+    *info = (pyuron_gesture_LayerBindingInfo)pyuron_gesture_LayerBindingInfo_init_zero;
+    info->layer       = layer;
+    info->dir         = dir;
+    info->behavior_id = bid;
+    info->param1      = p1;
+    info->param2      = p2;
+    info->enabled     = enabled;
+    return 0;
+}
+
+static int handle_get_layer_binding(const pyuron_gesture_GetLayerBindingRequest *req,
+                                    pyuron_gesture_Response *resp) {
+    resp->which_response_type = pyuron_gesture_Response_get_layer_binding_tag;
+    resp->response_type.get_layer_binding =
+        (pyuron_gesture_GetLayerBindingResponse)
+        pyuron_gesture_GetLayerBindingResponse_init_zero;
+    resp->response_type.get_layer_binding.has_binding = true;
+    return fill_layer_binding_info((uint8_t)req->layer, (uint8_t)req->dir,
+                                   &resp->response_type.get_layer_binding.binding);
+}
+
+static int handle_set_layer_binding(const pyuron_gesture_SetLayerBindingRequest *req,
+                                    pyuron_gesture_Response *resp) {
+    int ret = gkb_layer_set_binding((uint8_t)req->layer, (uint8_t)req->dir,
+                                    (uint16_t)req->behavior_id, req->param1, req->param2);
+    if (ret < 0) return ret;
+    gkb_layer_save_binding((uint8_t)req->layer, (uint8_t)req->dir);
+
+    resp->which_response_type = pyuron_gesture_Response_set_layer_binding_tag;
+    resp->response_type.set_layer_binding =
+        (pyuron_gesture_SetLayerBindingResponse)
+        pyuron_gesture_SetLayerBindingResponse_init_zero;
+    resp->response_type.set_layer_binding.has_binding = true;
+    return fill_layer_binding_info((uint8_t)req->layer, (uint8_t)req->dir,
+                                   &resp->response_type.set_layer_binding.binding);
+}
+
+static int handle_enable_layer(const pyuron_gesture_EnableLayerRequest *req,
+                               pyuron_gesture_Response *resp) {
+    int ret = gkb_layer_enable((uint8_t)req->layer);
+    if (ret < 0) return ret;
+    gkb_layer_save_enable((uint8_t)req->layer);
+    resp->which_response_type = pyuron_gesture_Response_enable_layer_tag;
+    resp->response_type.enable_layer.layer   = req->layer;
+    resp->response_type.enable_layer.enabled = true;
+    return 0;
+}
+
+static int handle_disable_layer(const pyuron_gesture_DisableLayerRequest *req,
+                                pyuron_gesture_Response *resp) {
+    int ret = gkb_layer_disable((uint8_t)req->layer);
+    if (ret < 0) return ret;
+    gkb_layer_save_enable((uint8_t)req->layer);
+    resp->which_response_type = pyuron_gesture_Response_disable_layer_tag;
+    resp->response_type.disable_layer.layer   = req->layer;
+    resp->response_type.disable_layer.enabled = false;
+    return 0;
+}
+
+static int handle_get_layer_count(const pyuron_gesture_GetLayerCountRequest *req,
+                                  pyuron_gesture_Response *resp) {
+    ARG_UNUSED(req);
+    resp->which_response_type = pyuron_gesture_Response_get_layer_count_tag;
+    resp->response_type.get_layer_count.count = (uint32_t)gkb_layer_count();
+    return 0;
+}
+
+static int handle_get_configured_layer(const pyuron_gesture_GetConfiguredLayerRequest *req,
+                                       pyuron_gesture_Response *resp) {
+    uint8_t layer; bool enabled;
+    int ret = gkb_layer_at((int)req->index, &layer, &enabled);
+    if (ret < 0) return ret;
+    resp->which_response_type = pyuron_gesture_Response_get_configured_layer_tag;
+    resp->response_type.get_configured_layer.layer   = layer;
+    resp->response_type.get_configured_layer.enabled = enabled;
+    return 0;
+}
+
 static bool gesture_rpc_handle_request(const zmk_custom_CallRequest *raw_request,
                                        pb_callback_t *encode_response) {
     pyuron_gesture_Response *resp =
@@ -187,6 +285,24 @@ static bool gesture_rpc_handle_request(const zmk_custom_CallRequest *raw_request
         break;
     case pyuron_gesture_Request_set_binding_tag:
         rc = handle_set_binding(&req.request_type.set_binding, resp);
+        break;
+    case pyuron_gesture_Request_get_layer_binding_tag:
+        rc = handle_get_layer_binding(&req.request_type.get_layer_binding, resp);
+        break;
+    case pyuron_gesture_Request_set_layer_binding_tag:
+        rc = handle_set_layer_binding(&req.request_type.set_layer_binding, resp);
+        break;
+    case pyuron_gesture_Request_enable_layer_tag:
+        rc = handle_enable_layer(&req.request_type.enable_layer, resp);
+        break;
+    case pyuron_gesture_Request_disable_layer_tag:
+        rc = handle_disable_layer(&req.request_type.disable_layer, resp);
+        break;
+    case pyuron_gesture_Request_get_layer_count_tag:
+        rc = handle_get_layer_count(&req.request_type.get_layer_count, resp);
+        break;
+    case pyuron_gesture_Request_get_configured_layer_tag:
+        rc = handle_get_configured_layer(&req.request_type.get_configured_layer, resp);
         break;
     default:
         LOG_WRN("Unsupported gesture request type: %d", req.which_request_type);

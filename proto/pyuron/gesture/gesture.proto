@@ -73,6 +73,13 @@ message Request {
         ResetGestureRequest reset = 4;
         GetBindingRequest get_binding = 5;
         SetBindingRequest set_binding = 6;
+        // Dynamic layer-gesture RPC (tags 7-12)
+        GetLayerBindingRequest get_layer_binding = 7;
+        SetLayerBindingRequest set_layer_binding = 8;
+        EnableLayerRequest enable_layer = 9;
+        DisableLayerRequest disable_layer = 10;
+        GetLayerCountRequest get_layer_count = 11;
+        GetConfiguredLayerRequest get_configured_layer = 12;
     }
 }
 
@@ -87,5 +94,50 @@ message Response {
         ResetGestureResponse reset = 5;
         GetBindingResponse get_binding = 6;
         SetBindingResponse set_binding = 7;
+        // Dynamic layer-gesture RPC (tags 8-13)
+        GetLayerBindingResponse get_layer_binding = 8;
+        SetLayerBindingResponse set_layer_binding = 9;
+        EnableLayerResponse enable_layer = 10;
+        DisableLayerResponse disable_layer = 11;
+        GetLayerCountResponse get_layer_count = 12;
+        GetConfiguredLayerResponse get_configured_layer = 13;
     }
 }
+
+// -----------------------------------------------------------------------
+// Dynamic layer-gesture messages
+// -----------------------------------------------------------------------
+
+// Snapshot of one layer/direction binding (+ enabled flag for the layer).
+message LayerBindingInfo {
+    uint32 layer = 1;
+    uint32 dir = 2;       // 0=right 1=left 2=down 3=up
+    uint32 behavior_id = 3;
+    int32 param1 = 4;
+    int32 param2 = 5;
+    bool enabled = 6;     // whether the layer entry is enabled
+}
+
+message GetLayerBindingRequest  { uint32 layer = 1; uint32 dir = 2; }
+message GetLayerBindingResponse { LayerBindingInfo binding = 1; }
+
+message SetLayerBindingRequest {
+    uint32 layer = 1;
+    uint32 dir = 2;
+    uint32 behavior_id = 3;
+    int32 param1 = 4;
+    int32 param2 = 5;
+}
+message SetLayerBindingResponse { LayerBindingInfo binding = 1; }
+
+message EnableLayerRequest  { uint32 layer = 1; }
+message EnableLayerResponse { uint32 layer = 1; bool enabled = 2; }
+
+message DisableLayerRequest  { uint32 layer = 1; }
+message DisableLayerResponse { uint32 layer = 1; bool enabled = 2; }
+
+message GetLayerCountRequest  {}
+message GetLayerCountResponse { uint32 count = 1; }
+
+message GetConfiguredLayerRequest  { uint32 index = 1; }
+message GetConfiguredLayerResponse { uint32 layer = 1; bool enabled = 2; }
