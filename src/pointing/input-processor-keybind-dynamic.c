@@ -554,3 +554,118 @@ static int gkb_nvs_set(const char *name, size_t len,
 
 SETTINGS_STATIC_HANDLER_DEFINE(gkb_dynamic, GKB_NVS_SUBTREE, NULL,
                                 gkb_nvs_set, NULL, NULL);
+
+/* -----------------------------------------------------------------------
+ * Sensitivity API  (declared in include/zmk/pointing/gesture_layer.h)
+ * Operates on all dynamic processor instances (there is normally only one).
+ * ----------------------------------------------------------------------- */
+
+#define GKB_DYNAMIC_DEV(n) DEVICE_DT_INST_GET(n),
+static const struct device *const gkb_dynamic_devs[] = {
+    DT_INST_FOREACH_STATUS_OKAY(GKB_DYNAMIC_DEV)
+};
+#define GKB_DYNAMIC_DEV_COUNT ARRAY_SIZE(gkb_dynamic_devs)
+
+#define GKS_NVS_SUBTREE "gks"
+
+int gkb_get_sensitivity(struct gkb_sensitivity *out) {
+    if (!out || GKB_DYNAMIC_DEV_COUNT == 0) {
+        return -EINVAL;
+    }
+    const struct gkb_dynamic_data *d = gkb_dynamic_devs[0]->data;
+    out->tick          = d->tick;
+    out->wait_ms       = d->wait_ms;
+    out->tap_ms        = d->tap_ms;
+    out->threshold     = d->threshold;
+    out->max_threshold = d->max_threshold;
+    return 0;
+}
+
+static int gkb_apply_param(struct gkb_dynamic_data *data,
+                           const struct gkb_dynamic_config *cfg,
+                           enum gkb_param param, int32_t value) {
+    switch (param) {
+    case GKB_PARAM_TICK:
+        data->tick      = (uint32_t)MAX(value, 1);
+        data->max_delta = cfg->max_pending_activations * data->tick;
+        break;
+    case GKB_PARAM_WAIT_MS:
+        data->wait_ms   = (uint32_t)MAX(value, 0);
+        break;
+    case GKB_PARAM_TAP_MS:
+        data->tap_ms    = (uint32_t)MAX(value, 0);
+        break;
+    case GKB_PARAM_THRESHOLD:
+        data->threshold = value;
+        break;
+    case GKB_PARAM_MAX_THRESHOLD:
+        data->max_threshold = value;
+        break;
+    default:
+        return -EINVAL;
+    }
+    return 0;
+}
+
+int gkb_set_param(enum gkb_param param, int32_t value) {
+    if (GKB_DYNAMIC_DEV_COUNT == 0) {
+        return -EINVAL;
+    }
+    for (size_t i = 0; i < GKB_DYNAMIC_DEV_COUNT; i++) {
+        const struct device *dev = gkb_dynamic_devs[i];
+        struct gkb_dynamic_data *data = dev->data;
+        const struct gkb_dynamic_config *cfg = dev->config;
+        int ret = gkb_apply_param(data, cfg, param, value);
+        if (ret < 0) {
+            return ret;
+        }
+    }
+    return 0;
+}
+
+int gkb_save_param(enum gkb_param param, int32_t value) {
+    char key[24];
+    snprintf(key, sizeof(key), GKS_NVS_SUBTREE "/%u", (unsigned)param);
+    return settings_save_one(key, &value, sizeof(value));
+}
+
+int gkb_reset_sensitivity(void) {
+    if (GKB_DYNAMIC_DEV_COUNT == 0) {
+        return -EINVAL;
+    }
+    for (size_t i = 0; i < GKB_DYNAMIC_DEV_COUNT; i++) {
+        const struct device *dev = gkb_dynamic_devs[i];
+        const struct gkb_dynamic_config *cfg = dev->config;
+        struct gkb_dynamic_data *data = dev->data;
+        data->tick          = cfg->tick;
+        data->wait_ms       = cfg->wait_ms;
+        data->tap_ms        = cfg->tap_ms;
+        data->threshold     = cfg->threshold;
+        data->max_threshold = cfg->max_threshold;
+        data->max_delta     = cfg->max_pending_activations * data->tick;
+    }
+    for (uint32_t p = 0; p < 5; p++) {
+        char key[24];
+        snprintf(key, sizeof(key), GKS_NVS_SUBTREE "/%u", (unsigned)p);
+        settings_delete(key);
+    }
+    return 0;
+}
+
+static int gks_nvs_set(const char *name, size_t len,
+                       settings_read_cb read_cb, void *cb_arg) {
+    uint32_t param = (uint32_t)strtoul(name, NULL, 10);
+    int32_t value;
+    if (len != sizeof(value)) {
+        return -EINVAL;
+    }
+    ssize_t rc = read_cb(cb_arg, &value, sizeof(value));
+    if (rc < 0) {
+        return (int)rc;
+    }
+    gkb_set_param((enum gkb_param)param, value);
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(gkb_sens, GKS_NVS_SUBTREE, NULL,
+                                gks_nvs_set, NULL, NULL);

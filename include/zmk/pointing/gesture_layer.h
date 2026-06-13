@@ -76,3 +76,37 @@ int gkb_layer_count(void);
  * @return 0 on success, -EINVAL if index out of range.
  */
 int gkb_layer_at(int index, uint8_t *layer_out, bool *enabled_out);
+
+/* -----------------------------------------------------------------------
+ * Sensitivity (tick / wait-ms / tap-ms / threshold / max-threshold) API
+ * Implemented in src/pointing/input-processor-keybind-dynamic.c.
+ * Values must match enum Param in proto/pyuron/gesture/gesture.proto.
+ * ----------------------------------------------------------------------- */
+
+enum gkb_param {
+    GKB_PARAM_TICK          = 0,
+    GKB_PARAM_WAIT_MS       = 1,
+    GKB_PARAM_TAP_MS        = 2,
+    GKB_PARAM_THRESHOLD     = 3,
+    GKB_PARAM_MAX_THRESHOLD = 4,
+};
+
+struct gkb_sensitivity {
+    uint32_t tick;
+    uint32_t wait_ms;
+    uint32_t tap_ms;
+    int32_t  threshold;
+    int32_t  max_threshold;
+};
+
+/** Read the current live sensitivity values from the dynamic processor. */
+int gkb_get_sensitivity(struct gkb_sensitivity *out);
+
+/** Live-change one sensitivity parameter. Takes effect immediately. */
+int gkb_set_param(enum gkb_param param, int32_t value);
+
+/** Persist one sensitivity parameter to NVS (survives reboot). */
+int gkb_save_param(enum gkb_param param, int32_t value);
+
+/** Restore all sensitivity values to devicetree defaults and clear NVS. */
+int gkb_reset_sensitivity(void);

@@ -15,7 +15,7 @@ config ZMK_INPUT_PROCESSOR_KEYBIND_CODES_MAX_LEN
 config ZMK_INPUT_PROCESSOR_KEYBIND_STUDIO_RPC
     bool "Live gesture tuning over a custom Studio RPC subsystem"
     default n
-    depends on ZMK_INPUT_PROCESSOR_KEYBIND && ZMK_STUDIO
+    depends on (ZMK_INPUT_PROCESSOR_KEYBIND || ZMK_INPUT_PROCESSOR_KEYBIND_DYNAMIC) && ZMK_STUDIO
     help
       Exposes each zip_keybind processor's tick / wait-ms / threshold params
       over a custom Studio RPC subsystem so they can be changed live from the

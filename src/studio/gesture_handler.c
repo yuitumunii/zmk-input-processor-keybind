@@ -19,7 +19,9 @@
 #include <pb_encode.h>
 #include <zephyr/sys/util.h>
 #include <zmk/studio/custom.h>
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND)
 #include <zmk/pointing/zip_keybind.h>
+#endif
 #include <zmk/pointing/gesture_layer.h>
 #include <pyuron/gesture/gesture.pb.h>
 
@@ -37,23 +39,24 @@ ZMK_RPC_CUSTOM_SUBSYSTEM(pyuron_gesture, &gesture_feature_meta, gesture_rpc_hand
 
 ZMK_RPC_CUSTOM_SUBSYSTEM_RESPONSE_BUFFER(pyuron_gesture, pyuron_gesture_Response);
 
-// Fill a protobuf GestureInfo from the live state of instance `id`.
+// Fill a protobuf GestureInfo from the live state of the dynamic processor.
+// id is accepted for API compatibility but ignored (there is one global set).
 static int fill_gesture_info(uint32_t id, pyuron_gesture_GestureInfo *info) {
-    struct zip_keybind_info src;
-    int ret = zip_keybind_get_info(id, &src);
+    struct gkb_sensitivity sens;
+    int ret = gkb_get_sensitivity(&sens);
     if (ret < 0) {
         return ret;
     }
 
     *info = (pyuron_gesture_GestureInfo)pyuron_gesture_GestureInfo_init_zero;
     info->id = id;
-    strncpy(info->name, src.name ? src.name : "", sizeof(info->name) - 1);
+    strncpy(info->name, "dynamic", sizeof(info->name) - 1);
     info->name[sizeof(info->name) - 1] = '\0';
-    info->tick = src.tick;
-    info->wait_ms = src.wait_ms;
-    info->tap_ms = src.tap_ms;
-    info->threshold = src.threshold;
-    info->max_threshold = src.max_threshold;
+    info->tick          = sens.tick;
+    info->wait_ms       = sens.wait_ms;
+    info->tap_ms        = sens.tap_ms;
+    info->threshold     = sens.threshold;
+    info->max_threshold = sens.max_threshold;
     return 0;
 }
 
@@ -61,7 +64,8 @@ static int handle_get_count(const pyuron_gesture_GetCountRequest *req,
                             pyuron_gesture_Response *resp) {
     ARG_UNUSED(req);
     resp->which_response_type = pyuron_gesture_Response_get_count_tag;
-    resp->response_type.get_count.count = (uint32_t)zip_keybind_get_count();
+    // Dynamic processor is a global singleton; always report count=1.
+    resp->response_type.get_count.count = 1;
     return 0;
 }
 
@@ -83,12 +87,12 @@ static int handle_set_param(const pyuron_gesture_SetParamRequest *req,
 
     LOG_DBG("set gesture id=%u param=%d value=%d", req->id, (int)req->param, (int)req->value);
 
-    int ret = zip_keybind_set_param(req->id, (enum zip_keybind_param)req->param, req->value);
+    int ret = gkb_set_param((enum gkb_param)req->param, req->value);
     if (ret < 0) {
         return ret;
     }
     // Persist so the tuned value survives reboot.
-    zip_keybind_save_param(req->id, (enum zip_keybind_param)req->param, req->value);
+    gkb_save_param((enum gkb_param)req->param, req->value);
 
     resp->which_response_type = pyuron_gesture_Response_set_param_tag;
     resp->response_type.set_param = (pyuron_gesture_SetParamResponse)
@@ -97,6 +101,7 @@ static int handle_set_param(const pyuron_gesture_SetParamRequest *req,
     return fill_gesture_info(req->id, &resp->response_type.set_param.gesture);
 }
 
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND)
 static int fill_binding_info(uint32_t id, uint32_t dir, pyuron_gesture_BindingInfo *info) {
     uint16_t bid = 0;
     int32_t p1 = 0, p2 = 0;
@@ -136,10 +141,13 @@ static int handle_set_binding(const pyuron_gesture_SetBindingRequest *req,
     resp->response_type.set_binding.has_binding = true;
     return fill_binding_info(req->id, req->dir, &resp->response_type.set_binding.binding);
 }
+#endif /* IS_ENABLED(CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND) */
 
 static int handle_reset(const pyuron_gesture_ResetGestureRequest *req,
                         pyuron_gesture_Response *resp) {
-    int ret = zip_keybind_reset(req->id);
+    // Reset all sensitivity params to DT defaults and clear NVS.
+    // req->id is ignored: there is one global dynamic processor.
+    int ret = gkb_reset_sensitivity();
     if (ret < 0) {
         return ret;
     }
@@ -280,12 +288,14 @@ static bool gesture_rpc_handle_request(const zmk_custom_CallRequest *raw_request
     case pyuron_gesture_Request_reset_tag:
         rc = handle_reset(&req.request_type.reset, resp);
         break;
+#if IS_ENABLED(CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND)
     case pyuron_gesture_Request_get_binding_tag:
         rc = handle_get_binding(&req.request_type.get_binding, resp);
         break;
     case pyuron_gesture_Request_set_binding_tag:
         rc = handle_set_binding(&req.request_type.set_binding, resp);
         break;
+#endif /* IS_ENABLED(CONFIG_ZMK_INPUT_PROCESSOR_KEYBIND) */
     case pyuron_gesture_Request_get_layer_binding_tag:
         rc = handle_get_layer_binding(&req.request_type.get_layer_binding, resp);
         break;
