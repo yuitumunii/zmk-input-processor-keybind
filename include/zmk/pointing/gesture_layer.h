@@ -110,3 +110,32 @@ int gkb_save_param(enum gkb_param param, int32_t value);
 
 /** Restore all sensitivity values to devicetree defaults and clear NVS. */
 int gkb_reset_sensitivity(void);
+
+/* -----------------------------------------------------------------------
+ * Per-(layer, direction) sensitivity API.
+ *
+ * Each layer/direction has its own tick / wait-ms / threshold so e.g. one
+ * direction fires fast (low wait-ms) while another has a long cooldown to
+ * avoid machine-gun repeats (e.g. F11). Values are seeded from the global
+ * defaults at init and overridden live via these calls. Persisted under NVS
+ * subtree "gls/<layer>/<dir>". Only TICK / WAIT_MS / THRESHOLD are
+ * per-direction; TAP_MS and MAX_THRESHOLD stay global (gkb_set_param).
+ * ----------------------------------------------------------------------- */
+
+struct gkb_dir_sensitivity {
+    uint32_t tick;
+    uint32_t wait_ms;
+    int32_t  threshold;
+};
+
+/** Read per-(layer,dir) sensitivity. dir: 0=RIGHT 1=LEFT 2=DOWN 3=UP. */
+int gkb_layer_get_sens(uint8_t layer, uint8_t dir, struct gkb_dir_sensitivity *out);
+
+/** Live-change one per-(layer,dir) sensitivity param (TICK/WAIT_MS/THRESHOLD). */
+int gkb_layer_set_sens(uint8_t layer, uint8_t dir, enum gkb_param param, int32_t value);
+
+/** Persist per-(layer,dir) sensitivity to NVS. */
+int gkb_layer_save_sens(uint8_t layer, uint8_t dir);
+
+/** Restore one (layer,dir) sensitivity to global defaults and clear its NVS. */
+int gkb_layer_reset_sens(uint8_t layer, uint8_t dir);

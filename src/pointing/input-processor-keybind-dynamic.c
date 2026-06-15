@@ -52,18 +52,48 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define GKB_DIR_COUNT   4
 #define GKB_MAX_LAYERS  16
 
+/* Per-direction tunable sensitivity (TICK/WAIT_MS/THRESHOLD). */
+struct gkb_dir_sens {
+    uint32_t tick;
+    uint32_t wait_ms;
+    int32_t  threshold;
+    int64_t  last_fire;   /* runtime only: uptime ms of last fire (cooldown gate) */
+};
+
 struct gkb_layer_entry {
     bool enabled;
+    bool sens_seeded;     /* per-dir sens initialised from defaults? */
     struct zmk_behavior_binding bindings[GKB_DIR_COUNT];
+    struct gkb_dir_sens sens[GKB_DIR_COUNT];
 };
 
 static struct gkb_layer_entry gkb_table[GKB_MAX_LAYERS];
+
+/* Default per-direction sensitivity, captured from the dynamic processor
+ * devicetree config at init. Used to seed a layer's sens the first time it
+ * is touched, and as the target for gkb_layer_reset_sens(). */
+static struct gkb_dir_sens gkb_sens_defaults = {
+    .tick = 180, .wait_ms = 0, .threshold = 1, .last_fire = 0,
+};
+
+/* Seed a layer's per-direction sensitivity from the defaults (idempotent). */
+static void gkb_seed_layer_sens(uint8_t layer) {
+    if (layer >= GKB_MAX_LAYERS || gkb_table[layer].sens_seeded) return;
+    for (int d = 0; d < GKB_DIR_COUNT; d++) {
+        gkb_table[layer].sens[d].tick      = gkb_sens_defaults.tick;
+        gkb_table[layer].sens[d].wait_ms   = gkb_sens_defaults.wait_ms;
+        gkb_table[layer].sens[d].threshold = gkb_sens_defaults.threshold;
+        gkb_table[layer].sens[d].last_fire = 0;
+    }
+    gkb_table[layer].sens_seeded = true;
+}
 
 /* list of configured (ever set) layers for gkb_layer_at() */
 static uint8_t gkb_configured_layers[GKB_MAX_LAYERS];
 static int     gkb_configured_count = 0;
 
 static void gkb_mark_configured(uint8_t layer) {
+    gkb_seed_layer_sens(layer);
     for (int i = 0; i < gkb_configured_count; i++) {
         if (gkb_configured_layers[i] == layer) return;
     }
@@ -127,8 +157,24 @@ struct gkb_dynamic_data {
 /* -----------------------------------------------------------------------
  * Motion helpers  (verbatim from input-processor-keybind.c)
  * ----------------------------------------------------------------------- */
+/* dir index (matches bindings[]/sens[] order): 0=RIGHT 1=LEFT 2=DOWN 3=UP. */
+static inline int gkb_dir_for_x(int32_t dx) { return dx > 0 ? 0 : 1; }
+static inline int gkb_dir_for_y(int32_t dy) { return dy > 0 ? 3 : 2; }
+
+/* Per-(layer,dir) tick (>=1). Falls back to global data->tick if unseeded. */
+static inline uint32_t gkb_tick_at(const struct gkb_dynamic_data *data, int dir) {
+    uint8_t L = data->active_layer;
+    if (L >= GKB_MAX_LAYERS || !gkb_table[L].sens_seeded) {
+        return data->tick ? data->tick : 1;
+    }
+    uint32_t t = gkb_table[L].sens[dir].tick;
+    return t ? t : 1;
+}
+
 static inline bool gkb_has_pending(const struct gkb_dynamic_data *data) {
-    return abs(data->delta_x) >= data->tick || abs(data->delta_y) >= data->tick;
+    uint32_t tx = gkb_tick_at(data, gkb_dir_for_x(data->delta_x));
+    uint32_t ty = gkb_tick_at(data, gkb_dir_for_y(data->delta_y));
+    return abs(data->delta_x) >= (int32_t)tx || abs(data->delta_y) >= (int32_t)ty;
 }
 
 static uint32_t gkb_approx_hypot(uint32_t a, uint32_t b) {
@@ -241,41 +287,63 @@ static void gkb_press_work_cb(struct k_work *work) {
     const struct gkb_dynamic_config *cfg = dev->config;
 
     bool has_pending = gkb_has_pending(data);
+    uint8_t L = data->active_layer;
+    bool per_layer = (L < GKB_MAX_LAYERS && gkb_table[L].sens_seeded);
+    int64_t now = k_uptime_get();
 
+    /* Release the previous cycle's presses. Cooldown is now per-direction
+     * (timestamp gate below) rather than a single blocking sleep, so a fast
+     * direction stays fast while another can have a long cooldown. */
     if (data->state != ZIP_KEY_NONE) {
         gkb_check_release(data, cfg, ZIP_KEY_LEFT);
         gkb_check_release(data, cfg, ZIP_KEY_RIGHT);
         gkb_check_release(data, cfg, ZIP_KEY_UP);
         gkb_check_release(data, cfg, ZIP_KEY_DOWN);
-        k_sleep(K_MSEC(data->wait_ms));
+        if (!per_layer) {
+            k_sleep(K_MSEC(data->wait_ms)); /* legacy global cooldown */
+        }
     }
 
     if (has_pending) {
         int idx = ZIP_KEY_NONE;
         int idy = ZIP_KEY_NONE;
 
-        if (abs(data->delta_x) >= data->tick) {
+        /* ---- horizontal axis ---- */
+        int dx_dir = gkb_dir_for_x(data->delta_x);   /* 0=RIGHT 1=LEFT */
+        uint32_t tick_x = gkb_tick_at(data, dx_dir);
+        if (abs(data->delta_x) >= (int32_t)tick_x) {
+            uint32_t wait_x = per_layer ? gkb_table[L].sens[dx_dir].wait_ms : 0;
+            bool cooled = !per_layer ||
+                          (now - gkb_table[L].sens[dx_dir].last_fire >= (int64_t)wait_x);
             if (data->delta_x > 0) {
-                idx = ZIP_KEY_RIGHT;
-                data->delta_x -= data->tick;
+                data->delta_x -= tick_x;
                 gkb_check_release(data, cfg, ZIP_KEY_LEFT);
+                if (cooled) idx = ZIP_KEY_RIGHT;
             } else {
-                idx = ZIP_KEY_LEFT;
-                data->delta_x += data->tick;
+                data->delta_x += tick_x;
                 gkb_check_release(data, cfg, ZIP_KEY_RIGHT);
+                if (cooled) idx = ZIP_KEY_LEFT;
             }
+            if (cooled && per_layer) gkb_table[L].sens[dx_dir].last_fire = now;
         }
 
-        if (abs(data->delta_y) >= data->tick) {
+        /* ---- vertical axis ---- */
+        int dy_dir = gkb_dir_for_y(data->delta_y);   /* 3=UP 2=DOWN */
+        uint32_t tick_y = gkb_tick_at(data, dy_dir);
+        if (abs(data->delta_y) >= (int32_t)tick_y) {
+            uint32_t wait_y = per_layer ? gkb_table[L].sens[dy_dir].wait_ms : 0;
+            bool cooled = !per_layer ||
+                          (now - gkb_table[L].sens[dy_dir].last_fire >= (int64_t)wait_y);
             if (data->delta_y > 0) {
-                idy = ZIP_KEY_UP;
-                data->delta_y -= data->tick;
+                data->delta_y -= tick_y;
                 gkb_check_release(data, cfg, ZIP_KEY_DOWN);
+                if (cooled) idy = ZIP_KEY_UP;
             } else {
-                idy = ZIP_KEY_DOWN;
-                data->delta_y += data->tick;
+                data->delta_y += tick_y;
                 gkb_check_release(data, cfg, ZIP_KEY_UP);
+                if (cooled) idy = ZIP_KEY_DOWN;
             }
+            if (cooled && per_layer) gkb_table[L].sens[dy_dir].last_fire = now;
         }
 
         if (idx != ZIP_KEY_NONE) gkb_invoke_binding(data, cfg, idx, true);
@@ -303,8 +371,8 @@ static int gkb_handle_event(const struct device *dev, struct input_event *event,
         return ZMK_INPUT_PROC_CONTINUE;
     }
 
-    /* threshold filter */
-    if (data->threshold > abs(event->value) || abs(event->value) > data->max_threshold) {
+    /* global upper bound: ignore implausibly large single jumps */
+    if (abs(event->value) > data->max_threshold) {
         return ZMK_INPUT_PROC_STOP;
     }
 
@@ -324,13 +392,26 @@ static int gkb_handle_event(const struct device *dev, struct input_event *event,
         return ZMK_INPUT_PROC_CONTINUE;
     }
 
+    /* per-direction lower threshold (noise gate). direction from event sign. */
+    int ev_dir;
+    if (event->code == INPUT_REL_X) {
+        ev_dir = gkb_dir_for_x(event->value);
+    } else if (event->code == INPUT_REL_Y) {
+        ev_dir = gkb_dir_for_y(event->value);
+    } else {
+        return ZMK_INPUT_PROC_CONTINUE;
+    }
+    int32_t th = gkb_table[lid].sens_seeded ? gkb_table[lid].sens[ev_dir].threshold
+                                            : data->threshold;
+    if (th > abs(event->value)) {
+        return ZMK_INPUT_PROC_STOP;
+    }
+
     /* accumulate movement */
     if (event->code == INPUT_REL_X) {
         data->last_delta_x = event->value;
-    } else if (event->code == INPUT_REL_Y) {
-        data->last_delta_y = event->value;
     } else {
-        return ZMK_INPUT_PROC_CONTINUE;
+        data->last_delta_y = event->value;
     }
 
     /* wait until full movement received */
@@ -340,6 +421,16 @@ static int gkb_handle_event(const struct device *dev, struct input_event *event,
 
     /* capture active layer for press_work_cb */
     data->active_layer = (uint8_t)lid;
+
+    /* size the accumulation clamp for the largest per-direction tick so no
+     * direction is starved of headroom. */
+    if (gkb_table[lid].sens_seeded) {
+        uint32_t maxt = 1;
+        for (int d = 0; d < GKB_DIR_COUNT; d++) {
+            if (gkb_table[lid].sens[d].tick > maxt) maxt = gkb_table[lid].sens[d].tick;
+        }
+        data->max_delta = cfg->max_pending_activations * (int32_t)maxt;
+    }
 
     if (cfg->mode == 0) {
         gkb_handle_raw(data);
@@ -380,6 +471,27 @@ static int gkb_dynamic_init(const struct device *dev) {
     data->threshold = cfg->threshold;
     data->max_threshold = cfg->max_threshold;
     data->max_delta = cfg->max_pending_activations * data->tick;
+
+    /* Capture per-direction sensitivity defaults from devicetree config so
+     * gkb_seed_layer_sens()/reset use the real flashed values. */
+    gkb_sens_defaults.tick      = cfg->tick ? cfg->tick : 1;
+    gkb_sens_defaults.wait_ms   = cfg->wait_ms;
+    gkb_sens_defaults.threshold = cfg->threshold;
+    gkb_sens_defaults.last_fire = 0;
+
+    /* Seed any layers already marked configured (e.g. NVS bindings loaded
+     * before this init runs would have seeded with the static defaults; this
+     * is harmless because seed is idempotent and gls NVS overrides later). */
+    for (uint8_t l = 0; l < GKB_MAX_LAYERS; l++) {
+        if (gkb_table[l].sens_seeded) {
+            for (int d = 0; d < GKB_DIR_COUNT; d++) {
+                /* keep any value already overridden from NVS; only fill zeros */
+                if (gkb_table[l].sens[d].tick == 0) {
+                    gkb_table[l].sens[d].tick = gkb_sens_defaults.tick;
+                }
+            }
+        }
+    }
 
     k_work_init_delayable(&data->press_work, gkb_press_work_cb);
     return 0;
@@ -669,3 +781,93 @@ static int gks_nvs_set(const char *name, size_t len,
 
 SETTINGS_STATIC_HANDLER_DEFINE(gkb_sens, GKS_NVS_SUBTREE, NULL,
                                 gks_nvs_set, NULL, NULL);
+
+/* -----------------------------------------------------------------------
+ * Per-(layer, direction) sensitivity  (subtree "gls")
+ *   gls/<layer>/<dir>  → struct gkb_sens_nvs {tick, wait_ms, threshold}
+ * Only TICK/WAIT_MS/THRESHOLD are per-direction; TAP_MS/MAX_THRESHOLD global.
+ * ----------------------------------------------------------------------- */
+
+#define GLS_NVS_SUBTREE "gls"
+
+struct gkb_sens_nvs {
+    uint32_t tick;
+    uint32_t wait_ms;
+    int32_t  threshold;
+};
+
+int gkb_layer_get_sens(uint8_t layer, uint8_t dir, struct gkb_dir_sensitivity *out) {
+    if (layer >= GKB_MAX_LAYERS || dir >= GKB_DIR_COUNT || !out) return -EINVAL;
+    gkb_seed_layer_sens(layer);
+    out->tick      = gkb_table[layer].sens[dir].tick;
+    out->wait_ms   = gkb_table[layer].sens[dir].wait_ms;
+    out->threshold = gkb_table[layer].sens[dir].threshold;
+    return 0;
+}
+
+int gkb_layer_set_sens(uint8_t layer, uint8_t dir, enum gkb_param param, int32_t value) {
+    if (layer >= GKB_MAX_LAYERS || dir >= GKB_DIR_COUNT) return -EINVAL;
+    gkb_seed_layer_sens(layer);
+    struct gkb_dir_sens *s = &gkb_table[layer].sens[dir];
+    switch (param) {
+    case GKB_PARAM_TICK:      s->tick      = (uint32_t)MAX(value, 1); break;
+    case GKB_PARAM_WAIT_MS:   s->wait_ms   = (uint32_t)MAX(value, 0); break;
+    case GKB_PARAM_THRESHOLD: s->threshold = value;                   break;
+    default: return -EINVAL; /* TAP_MS / MAX_THRESHOLD are global only */
+    }
+    gkb_mark_configured(layer);
+    return 0;
+}
+
+static void gls_nvs_key(char *buf, size_t len, uint8_t layer, uint8_t dir) {
+    snprintf(buf, len, GLS_NVS_SUBTREE "/%u/%u", (unsigned)layer, (unsigned)dir);
+}
+
+int gkb_layer_save_sens(uint8_t layer, uint8_t dir) {
+    if (layer >= GKB_MAX_LAYERS || dir >= GKB_DIR_COUNT) return -EINVAL;
+    gkb_seed_layer_sens(layer);
+    struct gkb_sens_nvs rec = {
+        .tick      = gkb_table[layer].sens[dir].tick,
+        .wait_ms   = gkb_table[layer].sens[dir].wait_ms,
+        .threshold = gkb_table[layer].sens[dir].threshold,
+    };
+    char key[32];
+    gls_nvs_key(key, sizeof(key), layer, dir);
+    return settings_save_one(key, &rec, sizeof(rec));
+}
+
+int gkb_layer_reset_sens(uint8_t layer, uint8_t dir) {
+    if (layer >= GKB_MAX_LAYERS || dir >= GKB_DIR_COUNT) return -EINVAL;
+    gkb_seed_layer_sens(layer);
+    gkb_table[layer].sens[dir].tick      = gkb_sens_defaults.tick;
+    gkb_table[layer].sens[dir].wait_ms   = gkb_sens_defaults.wait_ms;
+    gkb_table[layer].sens[dir].threshold = gkb_sens_defaults.threshold;
+    char key[32];
+    gls_nvs_key(key, sizeof(key), layer, dir);
+    settings_delete(key);
+    return 0;
+}
+
+static int gls_nvs_set(const char *name, size_t len,
+                       settings_read_cb read_cb, void *cb_arg) {
+    const char *slash = strchr(name, '/');
+    if (!slash) return -ENOENT;
+    uint8_t layer = (uint8_t)strtoul(name, NULL, 10);
+    uint8_t dir   = (uint8_t)strtoul(slash + 1, NULL, 10);
+    if (layer >= GKB_MAX_LAYERS || dir >= GKB_DIR_COUNT) return 0;
+
+    struct gkb_sens_nvs rec;
+    if (len != sizeof(rec)) return -EINVAL;
+    ssize_t rc = read_cb(cb_arg, &rec, sizeof(rec));
+    if (rc < 0) return (int)rc;
+
+    gkb_seed_layer_sens(layer);
+    gkb_table[layer].sens[dir].tick      = rec.tick ? rec.tick : 1;
+    gkb_table[layer].sens[dir].wait_ms   = rec.wait_ms;
+    gkb_table[layer].sens[dir].threshold = rec.threshold;
+    gkb_mark_configured(layer);
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(gkb_layer_sens, GLS_NVS_SUBTREE, NULL,
+                                gls_nvs_set, NULL, NULL);

@@ -80,6 +80,10 @@ message Request {
         DisableLayerRequest disable_layer = 10;
         GetLayerCountRequest get_layer_count = 11;
         GetConfiguredLayerRequest get_configured_layer = 12;
+        // Per-(layer,direction) sensitivity RPC (tags 13-15)
+        GetLayerSensRequest get_layer_sens = 13;
+        SetLayerSensRequest set_layer_sens = 14;
+        ResetLayerSensRequest reset_layer_sens = 15;
     }
 }
 
@@ -101,6 +105,10 @@ message Response {
         DisableLayerResponse disable_layer = 11;
         GetLayerCountResponse get_layer_count = 12;
         GetConfiguredLayerResponse get_configured_layer = 13;
+        // Per-(layer,direction) sensitivity RPC (tags 14-16)
+        GetLayerSensResponse get_layer_sens = 14;
+        SetLayerSensResponse set_layer_sens = 15;
+        ResetLayerSensResponse reset_layer_sens = 16;
     }
 }
 
@@ -141,3 +149,30 @@ message GetLayerCountResponse { uint32 count = 1; }
 
 message GetConfiguredLayerRequest  { uint32 index = 1; }
 message GetConfiguredLayerResponse { uint32 layer = 1; bool enabled = 2; }
+
+// -----------------------------------------------------------------------
+// Per-(layer, direction) sensitivity messages
+// Only TICK / WAIT_MS / THRESHOLD are per-direction (see enum Param).
+// -----------------------------------------------------------------------
+
+message LayerSensInfo {
+    uint32 layer = 1;
+    uint32 dir = 2;          // 0=right 1=left 2=down 3=up
+    uint32 tick = 3;
+    uint32 wait_ms = 4;
+    int32 threshold = 5;
+}
+
+message GetLayerSensRequest  { uint32 layer = 1; uint32 dir = 2; }
+message GetLayerSensResponse { LayerSensInfo sens = 1; }
+
+message SetLayerSensRequest {
+    uint32 layer = 1;
+    uint32 dir = 2;
+    Param param = 3;          // TICK / WAIT_MS / THRESHOLD only
+    int32 value = 4;
+}
+message SetLayerSensResponse { LayerSensInfo sens = 1; }
+
+message ResetLayerSensRequest  { uint32 layer = 1; uint32 dir = 2; }
+message ResetLayerSensResponse { LayerSensInfo sens = 1; }

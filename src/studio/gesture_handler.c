@@ -256,6 +256,68 @@ static int handle_get_configured_layer(const pyuron_gesture_GetConfiguredLayerRe
     return 0;
 }
 
+/* -----------------------------------------------------------------------
+ * Per-(layer, direction) sensitivity handlers
+ * ----------------------------------------------------------------------- */
+
+static int fill_layer_sens_info(uint8_t layer, uint8_t dir,
+                                pyuron_gesture_LayerSensInfo *info) {
+    struct gkb_dir_sensitivity s;
+    int ret = gkb_layer_get_sens(layer, dir, &s);
+    if (ret < 0) return ret;
+    *info = (pyuron_gesture_LayerSensInfo)pyuron_gesture_LayerSensInfo_init_zero;
+    info->layer     = layer;
+    info->dir       = dir;
+    info->tick      = s.tick;
+    info->wait_ms   = s.wait_ms;
+    info->threshold = s.threshold;
+    return 0;
+}
+
+static int handle_get_layer_sens(const pyuron_gesture_GetLayerSensRequest *req,
+                                 pyuron_gesture_Response *resp) {
+    resp->which_response_type = pyuron_gesture_Response_get_layer_sens_tag;
+    resp->response_type.get_layer_sens =
+        (pyuron_gesture_GetLayerSensResponse)pyuron_gesture_GetLayerSensResponse_init_zero;
+    resp->response_type.get_layer_sens.has_sens = true;
+    return fill_layer_sens_info((uint8_t)req->layer, (uint8_t)req->dir,
+                                &resp->response_type.get_layer_sens.sens);
+}
+
+static int handle_set_layer_sens(const pyuron_gesture_SetLayerSensRequest *req,
+                                 pyuron_gesture_Response *resp) {
+    if (req->param != pyuron_gesture_Param_PARAM_TICK &&
+        req->param != pyuron_gesture_Param_PARAM_WAIT_MS &&
+        req->param != pyuron_gesture_Param_PARAM_THRESHOLD) {
+        return -EINVAL;
+    }
+    int ret = gkb_layer_set_sens((uint8_t)req->layer, (uint8_t)req->dir,
+                                 (enum gkb_param)req->param, req->value);
+    if (ret < 0) return ret;
+    gkb_layer_save_sens((uint8_t)req->layer, (uint8_t)req->dir);
+
+    resp->which_response_type = pyuron_gesture_Response_set_layer_sens_tag;
+    resp->response_type.set_layer_sens =
+        (pyuron_gesture_SetLayerSensResponse)pyuron_gesture_SetLayerSensResponse_init_zero;
+    resp->response_type.set_layer_sens.has_sens = true;
+    return fill_layer_sens_info((uint8_t)req->layer, (uint8_t)req->dir,
+                                &resp->response_type.set_layer_sens.sens);
+}
+
+static int handle_reset_layer_sens(const pyuron_gesture_ResetLayerSensRequest *req,
+                                   pyuron_gesture_Response *resp) {
+    int ret = gkb_layer_reset_sens((uint8_t)req->layer, (uint8_t)req->dir);
+    if (ret < 0) return ret;
+    gkb_layer_save_sens((uint8_t)req->layer, (uint8_t)req->dir);
+
+    resp->which_response_type = pyuron_gesture_Response_reset_layer_sens_tag;
+    resp->response_type.reset_layer_sens =
+        (pyuron_gesture_ResetLayerSensResponse)pyuron_gesture_ResetLayerSensResponse_init_zero;
+    resp->response_type.reset_layer_sens.has_sens = true;
+    return fill_layer_sens_info((uint8_t)req->layer, (uint8_t)req->dir,
+                                &resp->response_type.reset_layer_sens.sens);
+}
+
 static bool gesture_rpc_handle_request(const zmk_custom_CallRequest *raw_request,
                                        pb_callback_t *encode_response) {
     pyuron_gesture_Response *resp =
@@ -313,6 +375,15 @@ static bool gesture_rpc_handle_request(const zmk_custom_CallRequest *raw_request
         break;
     case pyuron_gesture_Request_get_configured_layer_tag:
         rc = handle_get_configured_layer(&req.request_type.get_configured_layer, resp);
+        break;
+    case pyuron_gesture_Request_get_layer_sens_tag:
+        rc = handle_get_layer_sens(&req.request_type.get_layer_sens, resp);
+        break;
+    case pyuron_gesture_Request_set_layer_sens_tag:
+        rc = handle_set_layer_sens(&req.request_type.set_layer_sens, resp);
+        break;
+    case pyuron_gesture_Request_reset_layer_sens_tag:
+        rc = handle_reset_layer_sens(&req.request_type.reset_layer_sens, resp);
         break;
     default:
         LOG_WRN("Unsupported gesture request type: %d", req.which_request_type);
