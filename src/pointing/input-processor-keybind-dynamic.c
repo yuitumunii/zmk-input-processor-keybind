@@ -163,11 +163,11 @@ static inline int gkb_dir_for_y(int32_t dy) { return dy > 0 ? 3 : 2; }
 
 /* Per-(layer,dir) tick (>=1). Falls back to global data->tick if unseeded. */
 static inline uint32_t gkb_tick_at(const struct gkb_dynamic_data *data, int dir) {
-    uint8_t L = data->active_layer;
-    if (L >= GKB_MAX_LAYERS || !gkb_table[L].sens_seeded) {
+    uint8_t lyr = data->active_layer;
+    if (lyr >= GKB_MAX_LAYERS || !gkb_table[lyr].sens_seeded) {
         return data->tick ? data->tick : 1;
     }
-    uint32_t t = gkb_table[L].sens[dir].tick;
+    uint32_t t = gkb_table[lyr].sens[dir].tick;
     return t ? t : 1;
 }
 
@@ -287,8 +287,8 @@ static void gkb_press_work_cb(struct k_work *work) {
     const struct gkb_dynamic_config *cfg = dev->config;
 
     bool has_pending = gkb_has_pending(data);
-    uint8_t L = data->active_layer;
-    bool per_layer = (L < GKB_MAX_LAYERS && gkb_table[L].sens_seeded);
+    uint8_t lyr = data->active_layer;
+    bool per_layer = (lyr < GKB_MAX_LAYERS && gkb_table[lyr].sens_seeded);
     int64_t now = k_uptime_get();
 
     /* Release the previous cycle's presses. Cooldown is now per-direction
@@ -312,9 +312,9 @@ static void gkb_press_work_cb(struct k_work *work) {
         int dx_dir = gkb_dir_for_x(data->delta_x);   /* 0=RIGHT 1=LEFT */
         uint32_t tick_x = gkb_tick_at(data, dx_dir);
         if (abs(data->delta_x) >= (int32_t)tick_x) {
-            uint32_t wait_x = per_layer ? gkb_table[L].sens[dx_dir].wait_ms : 0;
+            uint32_t wait_x = per_layer ? gkb_table[lyr].sens[dx_dir].wait_ms : 0;
             bool cooled = !per_layer ||
-                          (now - gkb_table[L].sens[dx_dir].last_fire >= (int64_t)wait_x);
+                          (now - gkb_table[lyr].sens[dx_dir].last_fire >= (int64_t)wait_x);
             if (data->delta_x > 0) {
                 data->delta_x -= tick_x;
                 gkb_check_release(data, cfg, ZIP_KEY_LEFT);
@@ -324,16 +324,16 @@ static void gkb_press_work_cb(struct k_work *work) {
                 gkb_check_release(data, cfg, ZIP_KEY_RIGHT);
                 if (cooled) idx = ZIP_KEY_LEFT;
             }
-            if (cooled && per_layer) gkb_table[L].sens[dx_dir].last_fire = now;
+            if (cooled && per_layer) gkb_table[lyr].sens[dx_dir].last_fire = now;
         }
 
         /* ---- vertical axis ---- */
         int dy_dir = gkb_dir_for_y(data->delta_y);   /* 3=UP 2=DOWN */
         uint32_t tick_y = gkb_tick_at(data, dy_dir);
         if (abs(data->delta_y) >= (int32_t)tick_y) {
-            uint32_t wait_y = per_layer ? gkb_table[L].sens[dy_dir].wait_ms : 0;
+            uint32_t wait_y = per_layer ? gkb_table[lyr].sens[dy_dir].wait_ms : 0;
             bool cooled = !per_layer ||
-                          (now - gkb_table[L].sens[dy_dir].last_fire >= (int64_t)wait_y);
+                          (now - gkb_table[lyr].sens[dy_dir].last_fire >= (int64_t)wait_y);
             if (data->delta_y > 0) {
                 data->delta_y -= tick_y;
                 gkb_check_release(data, cfg, ZIP_KEY_DOWN);
@@ -343,7 +343,7 @@ static void gkb_press_work_cb(struct k_work *work) {
                 gkb_check_release(data, cfg, ZIP_KEY_UP);
                 if (cooled) idy = ZIP_KEY_DOWN;
             }
-            if (cooled && per_layer) gkb_table[L].sens[dy_dir].last_fire = now;
+            if (cooled && per_layer) gkb_table[lyr].sens[dy_dir].last_fire = now;
         }
 
         if (idx != ZIP_KEY_NONE) gkb_invoke_binding(data, cfg, idx, true);
