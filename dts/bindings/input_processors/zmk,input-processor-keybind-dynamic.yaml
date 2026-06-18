@@ -71,3 +71,13 @@ properties:
       processing even if they have an entry in the binding table.
       Typically the MOUSE auto-layer and the scroller layer.
       Example: <6 7>
+  invert-x:
+    type: boolean
+  invert-y:
+    type: boolean
+  wedge-half-deg:
+    type: int
+    default: 45
+  deadzone-deg:
+    type: int
+    default: 0

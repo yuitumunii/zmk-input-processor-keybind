@@ -37,6 +37,11 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979
+#endif
 
 #include <zmk/pointing/gesture_layer.h>
 
@@ -131,6 +136,10 @@ struct gkb_dynamic_config {
     /* guard layers: events from these layers always pass through */
     const uint8_t *guard_layers;
     uint8_t         guard_layers_len;
+    bool     invert_x;
+    bool     invert_y;
+    uint16_t wedge_half_deg;
+    uint16_t deadzone_deg;
 };
 
 struct gkb_dynamic_data {
@@ -149,6 +158,21 @@ struct gkb_dynamic_data {
     uint32_t tap_ms;
     int32_t  threshold;
     int32_t  max_threshold;
+
+    /* feature 1/3: runtime gesture geometry */
+    bool     invert_x;
+    bool     invert_y;
+    uint16_t wedge_half_deg;
+    uint16_t deadzone_deg;
+    int32_t  wedge_tan_lo;   /* tan(B-dz)*1024（縦判定の下側境界） */
+    int32_t  wedge_tan_hi;   /* tan(B+dz)*1024（横判定の上側境界） */
+    /* feature 2: live viz */
+    bool     viz_enable;
+    int8_t   viz_dir;        /* 直近classify結果 -1=none */
+    uint32_t viz_mag;
+    bool     viz_fired;
+    int64_t  last_viz_ms;
+    int8_t   last_viz_dir;
 
     const struct device *dev;
     struct k_work_delayable press_work;
@@ -182,16 +206,42 @@ static uint32_t gkb_approx_hypot(uint32_t a, uint32_t b) {
     return a + ((b * 3) >> 3);
 }
 
+static void gkb_recompute_wedge(struct gkb_dynamic_data *data) {
+    int b  = CLAMP((int)data->wedge_half_deg, 5, 85);
+    int dz = CLAMP((int)data->deadzone_deg, 0, 40);
+    int lo = CLAMP(b - dz, 1, 89);
+    int hi = CLAMP(b + dz, 1, 89);
+    data->wedge_tan_lo = (int32_t)(tan(lo * (M_PI / 180.0)) * 1024.0);
+    data->wedge_tan_hi = (int32_t)(tan(hi * (M_PI / 180.0)) * 1024.0);
+}
+
 static void gkb_handle_4way(struct gkb_dynamic_data *data) {
-    int32_t movement = (int32_t)gkb_approx_hypot((uint32_t)abs(data->last_delta_x),
-                                                   (uint32_t)abs(data->last_delta_y));
-    if (abs(data->last_delta_x) > abs(data->last_delta_y)) {
-        if (data->last_delta_x < 0) movement = -movement;
-        data->delta_x = CLAMP(data->delta_x + movement, -data->max_delta, data->max_delta);
-    } else {
-        if (data->last_delta_y < 0) movement = -movement;
-        data->delta_y = CLAMP(data->delta_y + movement, -data->max_delta, data->max_delta);
+    int32_t dx = data->last_delta_x, dy = data->last_delta_y;
+    int64_t adx = abs(dx), ady = abs(dy);
+    int32_t movement = (int32_t)gkb_approx_hypot((uint32_t)adx, (uint32_t)ady);
+
+    bool vertical = false, horizontal = false;
+    if (adx * 1024 < ady * (int64_t)data->wedge_tan_lo) {
+        vertical = true;
+    } else if (adx * 1024 > ady * (int64_t)data->wedge_tan_hi) {
+        horizontal = true;
     }
+    /* どちらでもない=デッドゾーン → 無視 */
+
+    if (vertical) {
+        int32_t m = (dy < 0) ? -movement : movement;
+        data->delta_y = CLAMP(data->delta_y + m, -data->max_delta, data->max_delta);
+        data->viz_dir = gkb_dir_for_y(dy);
+    } else if (horizontal) {
+        int32_t m = (dx < 0) ? -movement : movement;
+        data->delta_x = CLAMP(data->delta_x + m, -data->max_delta, data->max_delta);
+        data->viz_dir = gkb_dir_for_x(dx);
+    } else {
+        data->viz_dir = -1;
+    }
+    data->viz_mag   = (uint32_t)movement;
+    data->viz_fired = (movement >= (int32_t)data->tick);
+
     data->last_delta_x = 0;
     data->last_delta_y = 0;
 }
@@ -393,25 +443,28 @@ static int gkb_handle_event(const struct device *dev, struct input_event *event,
     }
 
     /* per-direction lower threshold (noise gate). direction from event sign. */
+    int32_t ev_val = event->value;
     int ev_dir;
     if (event->code == INPUT_REL_X) {
-        ev_dir = gkb_dir_for_x(event->value);
+        if (data->invert_x) ev_val = -ev_val;
+        ev_dir = gkb_dir_for_x(ev_val);
     } else if (event->code == INPUT_REL_Y) {
-        ev_dir = gkb_dir_for_y(event->value);
+        if (data->invert_y) ev_val = -ev_val;
+        ev_dir = gkb_dir_for_y(ev_val);
     } else {
         return ZMK_INPUT_PROC_CONTINUE;
     }
     int32_t th = gkb_table[lid].sens_seeded ? gkb_table[lid].sens[ev_dir].threshold
                                             : data->threshold;
-    if (th > abs(event->value)) {
+    if (th > abs(ev_val)) {
         return ZMK_INPUT_PROC_STOP;
     }
 
     /* accumulate movement */
     if (event->code == INPUT_REL_X) {
-        data->last_delta_x = event->value;
+        data->last_delta_x = ev_val;
     } else {
-        data->last_delta_y = event->value;
+        data->last_delta_y = ev_val;
     }
 
     /* wait until full movement received */
@@ -438,6 +491,19 @@ static int gkb_handle_event(const struct device *dev, struct input_event *event,
         gkb_handle_4way(data);
     } else {
         gkb_handle_8way(data);
+    }
+
+    if (data->viz_enable && data->viz_dir >= 0) {
+        int64_t now = k_uptime_get();
+        if (data->viz_dir != data->last_viz_dir || (now - data->last_viz_ms) >= 50) {
+            uint32_t q = (data->tick > 0)
+                ? (uint32_t)MIN((int64_t)data->viz_mag * 100 / ((int64_t)data->tick * 2), 100)
+                : 0;
+            pyuron_gesture_notify_motion((uint32_t)data->viz_dir, q, data->viz_fired);
+            data->last_viz_dir = data->viz_dir;
+            data->last_viz_ms  = now;
+        }
+        data->viz_dir = -1; /* consume */
     }
 
     LOG_DBG("dynamic: lid=%u dx=%d dy=%d tick=%d",
@@ -471,6 +537,15 @@ static int gkb_dynamic_init(const struct device *dev) {
     data->threshold = cfg->threshold;
     data->max_threshold = cfg->max_threshold;
     data->max_delta = cfg->max_pending_activations * data->tick;
+    data->invert_x       = cfg->invert_x;
+    data->invert_y       = cfg->invert_y;
+    data->wedge_half_deg = cfg->wedge_half_deg;
+    data->deadzone_deg   = cfg->deadzone_deg;
+    data->viz_enable     = false;
+    data->viz_dir        = -1;
+    data->last_viz_dir   = -1;
+    data->last_viz_ms    = 0;
+    gkb_recompute_wedge(data);
 
     /* Capture per-direction sensitivity defaults from devicetree config so
      * gkb_seed_layer_sens()/reset use the real flashed values. */
@@ -520,6 +595,10 @@ static int gkb_dynamic_init(const struct device *dev) {
         .max_pending_activations = DT_INST_PROP_OR(n, max_pending_activations, 5),            \
         .guard_layers        = gkb_guard_layers_##n,                                          \
         .guard_layers_len    = ARRAY_SIZE(gkb_guard_layers_##n),                              \
+        .invert_x       = DT_INST_PROP_OR(n, invert_x, false),                               \
+        .invert_y       = DT_INST_PROP_OR(n, invert_y, false),                               \
+        .wedge_half_deg = DT_INST_PROP_OR(n, wedge_half_deg, 45),                            \
+        .deadzone_deg   = DT_INST_PROP_OR(n, deadzone_deg, 0),                               \
     };                                                                                         \
     DEVICE_DT_INST_DEFINE(n, &gkb_dynamic_init, NULL,                                         \
                           &gkb_dynamic_data_##n, &gkb_dynamic_config_##n,                     \
@@ -690,6 +769,11 @@ int gkb_get_sensitivity(struct gkb_sensitivity *out) {
     out->tap_ms        = d->tap_ms;
     out->threshold     = d->threshold;
     out->max_threshold = d->max_threshold;
+    out->invert_x       = d->invert_x;
+    out->invert_y       = d->invert_y;
+    out->wedge_half_deg = d->wedge_half_deg;
+    out->deadzone_deg   = d->deadzone_deg;
+    out->viz_enable     = d->viz_enable;
     return 0;
 }
 
@@ -713,6 +797,13 @@ static int gkb_apply_param(struct gkb_dynamic_data *data,
     case GKB_PARAM_MAX_THRESHOLD:
         data->max_threshold = value;
         break;
+    case GKB_PARAM_INVERT_X:       data->invert_x = (value != 0); break;
+    case GKB_PARAM_INVERT_Y:       data->invert_y = (value != 0); break;
+    case GKB_PARAM_VIZ_ENABLE:     data->viz_enable = (value != 0); break;
+    case GKB_PARAM_WEDGE_HALF_DEG: data->wedge_half_deg = (uint16_t)CLAMP(value,5,85);
+                                   gkb_recompute_wedge(data); break;
+    case GKB_PARAM_DEADZONE_DEG:   data->deadzone_deg = (uint16_t)CLAMP(value,0,40);
+                                   gkb_recompute_wedge(data); break;
     default:
         return -EINVAL;
     }
@@ -736,6 +827,7 @@ int gkb_set_param(enum gkb_param param, int32_t value) {
 }
 
 int gkb_save_param(enum gkb_param param, int32_t value) {
+    if (param == GKB_PARAM_VIZ_ENABLE) return 0;   /* transient UI gate */
     char key[24];
     snprintf(key, sizeof(key), GKS_NVS_SUBTREE "/%u", (unsigned)param);
     return settings_save_one(key, &value, sizeof(value));
@@ -755,8 +847,14 @@ int gkb_reset_sensitivity(void) {
         data->threshold     = cfg->threshold;
         data->max_threshold = cfg->max_threshold;
         data->max_delta     = cfg->max_pending_activations * data->tick;
+        data->invert_x       = cfg->invert_x;
+        data->invert_y       = cfg->invert_y;
+        data->wedge_half_deg = cfg->wedge_half_deg;
+        data->deadzone_deg   = cfg->deadzone_deg;
+        data->viz_enable     = false;
+        gkb_recompute_wedge(data);
     }
-    for (uint32_t p = 0; p < 5; p++) {
+    for (uint32_t p = 0; p < GKB_PARAM_COUNT; p++) {
         char key[24];
         snprintf(key, sizeof(key), GKS_NVS_SUBTREE "/%u", (unsigned)p);
         settings_delete(key);

@@ -57,6 +57,11 @@ static int fill_gesture_info(uint32_t id, pyuron_gesture_GestureInfo *info) {
     info->tap_ms        = sens.tap_ms;
     info->threshold     = sens.threshold;
     info->max_threshold = sens.max_threshold;
+    info->invert_x       = sens.invert_x;
+    info->invert_y       = sens.invert_y;
+    info->wedge_half_deg = sens.wedge_half_deg;
+    info->deadzone_deg   = sens.deadzone_deg;
+    info->viz_enable     = sens.viz_enable;
     return 0;
 }
 
@@ -397,4 +402,41 @@ static bool gesture_rpc_handle_request(const zmk_custom_CallRequest *raw_request
         resp->response_type.error = err;
     }
     return true;
+}
+
+/* ---- live motion notification (feature 2) ---- */
+static int gesture_subsystem_index(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached;
+    size_t n;
+    STRUCT_SECTION_COUNT(zmk_rpc_custom_subsystem, &n);
+    for (size_t i = 0; i < n; i++) {
+        struct zmk_rpc_custom_subsystem *s;
+        STRUCT_SECTION_GET(zmk_rpc_custom_subsystem, i, &s);
+        if (strcmp(s->identifier, "pyuron_gesture") == 0) { cached = (int)i; break; }
+    }
+    return cached;
+}
+
+static pyuron_gesture_Notification s_motion_notif;
+static bool encode_motion_payload(pb_ostream_t *stream, const pb_field_t *field,
+                                  void *const *arg) {
+    return zmk_rpc_custom_subsystem_encode_response_payload(
+        stream, field, &pyuron_gesture_Notification_msg, &s_motion_notif);
+}
+
+void pyuron_gesture_notify_motion(uint32_t dir, uint32_t magnitude, bool fired) {
+    int idx = gesture_subsystem_index();
+    if (idx < 0) return;
+    s_motion_notif = (pyuron_gesture_Notification)pyuron_gesture_Notification_init_zero;
+    s_motion_notif.which_notification_type = pyuron_gesture_Notification_motion_tag;
+    s_motion_notif.notification_type.motion.id        = 0;
+    s_motion_notif.notification_type.motion.dir       = dir;
+    s_motion_notif.notification_type.motion.magnitude = magnitude;
+    s_motion_notif.notification_type.motion.fired     = fired;
+    struct zmk_studio_custom_notification ev = {
+        .subsystem_index = (uint8_t)idx,
+        .encode_payload  = { .funcs = { .encode = encode_motion_payload }, .arg = NULL },
+    };
+    raise_zmk_studio_custom_notification(ev);
 }

@@ -89,7 +89,13 @@ enum gkb_param {
     GKB_PARAM_TAP_MS        = 2,
     GKB_PARAM_THRESHOLD     = 3,
     GKB_PARAM_MAX_THRESHOLD = 4,
+    GKB_PARAM_INVERT_X       = 5,
+    GKB_PARAM_INVERT_Y       = 6,
+    GKB_PARAM_VIZ_ENABLE     = 7,
+    GKB_PARAM_WEDGE_HALF_DEG = 8,
+    GKB_PARAM_DEADZONE_DEG   = 9,
 };
+#define GKB_PARAM_COUNT 10
 
 struct gkb_sensitivity {
     uint32_t tick;
@@ -97,6 +103,11 @@ struct gkb_sensitivity {
     uint32_t tap_ms;
     int32_t  threshold;
     int32_t  max_threshold;
+    bool     invert_x;
+    bool     invert_y;
+    uint16_t wedge_half_deg;
+    uint16_t deadzone_deg;
+    bool     viz_enable;
 };
 
 /** Read the current live sensitivity values from the dynamic processor. */
@@ -139,3 +150,6 @@ int gkb_layer_save_sens(uint8_t layer, uint8_t dir);
 
 /** Restore one (layer,dir) sensitivity to global defaults and clear its NVS. */
 int gkb_layer_reset_sens(uint8_t layer, uint8_t dir);
+
+/** ライブ可視化: 1方向のflickをStudioへ通知（viz_enable時のみ呼ぶ）。 */
+void pyuron_gesture_notify_motion(uint32_t dir, uint32_t magnitude, bool fired);

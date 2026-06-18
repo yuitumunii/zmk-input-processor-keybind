@@ -11,6 +11,11 @@ enum Param {
     PARAM_TAP_MS = 2;        // press/repeat cadence
     PARAM_THRESHOLD = 3;     // ignore movements smaller than this
     PARAM_MAX_THRESHOLD = 4; // ignore movements larger than this
+    PARAM_INVERT_X       = 5;   // value 0/1
+    PARAM_INVERT_Y       = 6;   // value 0/1
+    PARAM_VIZ_ENABLE     = 7;   // value 0/1（ライブ可視化のオン/オフ。NVS非永続）
+    PARAM_WEDGE_HALF_DEG = 8;   // value=度（縦軸境界角・既定45）
+    PARAM_DEADZONE_DEG   = 9;   // value=度（境界付近の無反応帯・既定0）
 }
 
 // Snapshot of one zip_keybind processor instance.
@@ -22,6 +27,12 @@ message GestureInfo {
     uint32 tap_ms = 5;
     int32 threshold = 6;
     int32 max_threshold = 7;
+    bool   invert_x       = 8;
+    bool   invert_y       = 9;
+    uint32 wedge_half_deg = 10;
+    uint32 deadzone_deg   = 11;
+    bool   viz_enable     = 12;
+    // reserved 13..16 for future per-direction asymmetric wedges
 }
 
 // Each response carries at most ONE GestureInfo so it stays well under the
@@ -176,3 +187,16 @@ message SetLayerSensResponse { LayerSensInfo sens = 1; }
 
 message ResetLayerSensRequest  { uint32 layer = 1; uint32 dir = 2; }
 message ResetLayerSensResponse { LayerSensInfo sens = 1; }
+
+// ライブ入力可視化用の非同期通知。CustomNotification の payload に載る。
+message GestureMotion {
+    uint32 id        = 1;   // 常に0（単一dynamicプロセッサ）
+    uint32 dir       = 2;   // 0=右 1=左 2=下 3=上
+    uint32 magnitude = 3;   // 0..100 量子化
+    bool   fired     = 4;   // しきい値超えで実際に発火する見込みか
+}
+message Notification {
+    oneof notification_type {
+        GestureMotion motion = 1;
+    }
+}
