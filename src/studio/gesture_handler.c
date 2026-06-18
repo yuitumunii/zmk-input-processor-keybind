@@ -86,7 +86,7 @@ static int handle_get(const pyuron_gesture_GetGestureRequest *req,
 static int handle_set_param(const pyuron_gesture_SetParamRequest *req,
                             pyuron_gesture_Response *resp) {
     if (req->param < pyuron_gesture_Param_PARAM_TICK ||
-        req->param > pyuron_gesture_Param_PARAM_MAX_THRESHOLD) {
+        req->param > pyuron_gesture_Param_PARAM_DEADZONE_DEG) {
         return -EINVAL;
     }
 

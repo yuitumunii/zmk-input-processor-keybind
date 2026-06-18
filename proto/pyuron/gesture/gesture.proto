@@ -2,9 +2,9 @@ syntax = "proto3";
 
 package pyuron.gesture;
 
-// Which runtime-tunable parameter of a zip_keybind processor to change.
-// Values MUST stay in sync with enum zip_keybind_param in
-// include/zmk/pointing/zip_keybind.h.
+// Which runtime-tunable parameter of the gesture processor to change.
+// Values MUST stay in sync with enum gkb_param in
+// include/zmk/pointing/gesture_layer.h.
 enum Param {
     PARAM_TICK = 0;          // flick size needed to fire (sensitivity)
     PARAM_WAIT_MS = 1;       // cooldown after a fire

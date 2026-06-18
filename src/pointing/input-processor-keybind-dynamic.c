@@ -211,8 +211,9 @@ static void gkb_recompute_wedge(struct gkb_dynamic_data *data) {
     int dz = CLAMP((int)data->deadzone_deg, 0, 40);
     int lo = CLAMP(b - dz, 1, 89);
     int hi = CLAMP(b + dz, 1, 89);
-    data->wedge_tan_lo = (int32_t)(tan(lo * (M_PI / 180.0)) * 1024.0);
-    data->wedge_tan_hi = (int32_t)(tan(hi * (M_PI / 180.0)) * 1024.0);
+    /* lround so 45° → exactly 1024 (default must reproduce |dx|>|dy| behavior). */
+    data->wedge_tan_lo = (int32_t)lround(tan(lo * (M_PI / 180.0)) * 1024.0);
+    data->wedge_tan_hi = (int32_t)lround(tan(hi * (M_PI / 180.0)) * 1024.0);
 }
 
 static void gkb_handle_4way(struct gkb_dynamic_data *data) {
@@ -220,10 +221,13 @@ static void gkb_handle_4way(struct gkb_dynamic_data *data) {
     int64_t adx = abs(dx), ady = abs(dy);
     int32_t movement = (int32_t)gkb_approx_hypot((uint32_t)adx, (uint32_t)ady);
 
+    /* vertical wins ties (<=) so default(45°,dz=0, tan_lo=tan_hi=1024) reproduces
+     * the original `|dx|>|dy| ? horizontal : vertical` exactly. Deadzone only
+     * exists when dz>0 (tan_lo<tan_hi). */
     bool vertical = false, horizontal = false;
-    if (adx * 1024 < ady * (int64_t)data->wedge_tan_lo) {
+    if (adx * 1024 <= ady * (int64_t)data->wedge_tan_lo) {
         vertical = true;
-    } else if (adx * 1024 > ady * (int64_t)data->wedge_tan_hi) {
+    } else if (adx * 1024 >= ady * (int64_t)data->wedge_tan_hi) {
         horizontal = true;
     }
     /* どちらでもない=デッドゾーン → 無視 */
@@ -239,8 +243,10 @@ static void gkb_handle_4way(struct gkb_dynamic_data *data) {
     } else {
         data->viz_dir = -1;
     }
-    data->viz_mag   = (uint32_t)movement;
-    data->viz_fired = (movement >= (int32_t)data->tick);
+    data->viz_mag = (uint32_t)movement;
+    /* fired uses the per-direction tick (matches press_work_cb), not global. */
+    data->viz_fired = (data->viz_dir >= 0) &&
+                      (movement >= (int32_t)gkb_tick_at(data, data->viz_dir));
 
     data->last_delta_x = 0;
     data->last_delta_y = 0;
@@ -496,8 +502,10 @@ static int gkb_handle_event(const struct device *dev, struct input_event *event,
     if (data->viz_enable && data->viz_dir >= 0) {
         int64_t now = k_uptime_get();
         if (data->viz_dir != data->last_viz_dir || (now - data->last_viz_ms) >= 50) {
-            uint32_t q = (data->tick > 0)
-                ? (uint32_t)MIN((int64_t)data->viz_mag * 100 / ((int64_t)data->tick * 2), 100)
+            /* quantize against the per-direction tick so 100 ≈ 2× fire threshold. */
+            int64_t vt = (int64_t)gkb_tick_at(data, data->viz_dir);
+            uint32_t q = (vt > 0)
+                ? (uint32_t)MIN((int64_t)data->viz_mag * 100 / (vt * 2), 100)
                 : 0;
             pyuron_gesture_notify_motion((uint32_t)data->viz_dir, q, data->viz_fired);
             data->last_viz_dir = data->viz_dir;
